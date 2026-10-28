@@ -1,0 +1,267 @@
+# System Shock on the m9b SoC
+
+System Shock (1994) as a program for the SoC in `../core`: Shockolate,
+the cross-platform C port of the source Night Dive Studios released in
+2018, with an m9b platform layer in place of its SDL one. It runs from
+PSRAM, uses picolibc, and reads the CD version's data from the SD card
+through the core firmware's SD driver and FatFs.
+
+**Status:** it plays on the board, at about 7.4 fps in a saved game (see
+Building), with sound effects and the music (the themes' sequences,
+pre-rendered: Music). In the host test harness (`tools/host/`, the same
+game and port code on 32-bit x86 Linux, held to the board's heap) it
+plays too: the splash screens, the intro, the menus, a new game, walking
+around level 1, sound effects, saving.
+
+Start it from the boot screen's browser (`SSHOCK.BIN` on the card), or with
+`../core/tools/run.py build/sshock.bin`. On the first start (no
+`SSHOCK/prefs.txt` yet) the intro plays; Esc skips it.
+
+**Input:** USB keyboards and mice on either USB port, with the game's
+controls (Shockolate's defaults: mouse and WASD; `?` lists the keys);
+the terminal's keys work too (arrows, Enter, Esc, Tab, Backspace,
+printable characters), which is enough for the menus (Down, Enter: New
+Game; a name, Enter: start).
+
+**Double clicks** need two fixes at this frame rate. The buttons are
+sampled in the audio interrupt with their times (the main loop polls once a
+frame, 100 ms or more apart, so a quick double click fell between two
+polls). And the UI expires a pending click at the time the input was
+collected (`m9b_input_time`), not at the current time: the main loop polls
+the UI before it pumps the input, a frame after the last pump, so the
+first click expired while the second, made in time, was still queued. At
+7 fps (140 ms per frame, the host harness with its input on a 5 ms timer
+like the interrupt) no double click of ten registered before, and ten of
+ten after. Also, the pointer moves one screen pixel per mouse count,
+so the game's double-click tolerance (how far the pointer may move between
+the clicks) is raised from 5 pixels to 16 (`port/m9b_shock.c`): at 5, a
+tiny hand movement broke most double clicks. How quickly the second click
+has to follow is the game's own setting (Options, Input: Double click).
+
+**License:** GPL v3 (`shockolate/LICENSE`). The game data isn't free and
+isn't in the repository; it comes from an installed CD version (e.g.
+Steam's "System Shock: Classic", whose `SS1/SSHOCK` is the CD install).
+
+## Sources
+
+| Part | Upstream | Version | Here |
+|---|---|---|---|
+| The game | [Interrupt/systemshock](https://github.com/Interrupt/systemshock) (Shockolate: the portable C port of the source Night Dive Studios released) | `6c1fe472` | `shockolate/`, trimmed, with changes (Changes to Shockolate) |
+| SDL stand-in | [SDL2](https://github.com/libsdl-org/SDL) and SDL_mixer's API, for the parts the game still uses | | `port/SDL.h`, `port/SDL_mixer.h`, written for the port |
+| Music renderer | [Wohlstand/libADLMIDI](https://github.com/Wohlstand/libADLMIDI) | `ef98fab` (`../core/tools/midirender/build.sh`) | used by `tools/make_music.sh` on the PC |
+
+## Why Shockolate
+
+Night Dive's release is the 1995 Macintosh PowerPC source, with Mac
+Toolbox calls and some 68K/PowerPC assembly. Shockolate (upstream commit
+`6c1fe472`) is that source made portable: the assembly in C, the Mac
+parts on SDL2, the DOS CD data read directly. Its physics engine (EDMS) and
+fixed-point class are C++ without the library (no streams or exceptions in
+the code the game uses), so they build with picolibc's C++ support and no
+libstdc++.
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `shockolate/` | Shockolate, trimmed to what the build uses (no OpenGL renderer, MIDI synthesizers, CMake, Mac archive, Windows and macOS packaging), with changes (below) |
+| `port/m9b_shock.c` | in place of `MacSrc/Shock.c` and `ShockBitmap.c`: `main`, video (surfaces, display buffers, palette, the vertical-blank flip), time, screenshots over the UART |
+| `port/m9b_events.c` | in place of `INPUT/Source/sdl_events.c`: USB keyboards and mice and the UART's keys into the game's key and mouse event queues (HID usages to Mac key codes) |
+| `port/m9b_sound.c` | in place of `MacSrc/SDLSound.c` and `Xmi.c`: the effects mixer (VOC samples), the audio stream cutscenes and audio logs feed, the music (pre-rendered sequences, streamed) |
+| `port/m9b_posix.c` | files under `SSHOCK/` (the linker wraps `open`, `unlink`, `rename`), `access`, `gettimeofday`, `stdin` |
+| `port/m9b_hw.h` | interrupts, cache cleaning, start-up (no-ops in the host build) |
+| `port/SDL.h`, `SDL_mixer.h`, `shockolate_version.h` | a stand-in for the SDL2 types and calls the game code still makes; the header upstream's CMake generates |
+| `tools/put_data.sh` | copies the data from an installed CD version to the card |
+| `tools/make_music.sh` | renders the music to WAV files on a PC (see Music) and optionally copies them to the card |
+| `tools/newgame.sh` | loads a build and starts a new game from the UART (tests) |
+| `tools/host/` | the host test harness: `host.c`, `make_datadir.sh` |
+| `../core/runtime/syscalls.c`, `string.c`, `trap.c`, `trap_entry.S` | the runtime all the ports share (in the core): files through FatFs, the UART console, misaligned access emulation, the trap handler and PC-sampling profiler |
+
+## Building and the SD card
+
+`make` builds `build/sshock.bin` (about 1 MB). `make B=build-prof
+EXTRA="-DM9B_PROFILE -DPROF_SIZE=0x00100000u"` reports frames per second,
+sound, frame copy and file read time, emulated misaligned accesses and the
+heap's top every 5 s, and the PC profile every 15 s
+(`../core/tools/prof.py ELF LOG`). Also in `EXTRA`: `-DPROF_ON_AUDIO`
+samples on the audio interrupts (187.5 Hz, not tied to the display) instead
+of the vertical blank; `-DPROF_MEMCPY_CALLERS=<memcpy's size>` counts
+`memcpy`'s samples at its callers; `-DM9B_DIV_STATS` counts the fixed-point
+divisions by path (one hardware divide, the 64-by-32-bit routine, libgcc).
+The first 15 s window includes the menus (which redraw at 200 fps):
+leave it out when looking at the game.
+
+Speed-ups so far (5.8 to 6.9 fps in a saved game, then 7.4 with the
+core's radix-4 divider): the texture unpacker (`RSD/RSDUnpack.c`, M9B)
+without unaligned word accesses (97% of the misaligned accesses the trap
+handler emulated), and the fixed-point divisions (`FIX/Source/fix.c`)
+through the hardware divider (`../core/firmware/m9b_div.h`) instead of
+libgcc's `__divdi3`.
+
+The game data goes in `data/` (`data/README.md` says what goes there).
+The whole card, all the games with their data and music, is built in
+m9b-system, which has this repository as a submodule:
+`../sdcard/make_sdcard.sh` (see `../sdcard/README.md`) takes the data from
+here. The scripts below add or replace files on a card in the board,
+through the serial port.
+
+The card needs `SSHOCK/RES/DATA/`: `tools/put_data.sh
+~/.local/share/Steam/steamapps/common/SS1/SSHOCK` copies the 38 files the
+build reads (92 MB, about 20 minutes through the board; `--no-logs` leaves
+out the audio logs and barks: 34 MB, 7 minutes; emails then show their
+text without the audio) and `SSHOCK/RES/SOUND/THM*.BIN`, the music AI's
+tables; the music itself is `tools/make_music.sh` (Music); and `SSHOCK.BIN` in the
+root for the boot screen's browser (`../core/tools/sdput/sdput.py put
+build/sshock.bin SSHOCK.BIN`). The game writes `prefs.txt`, `keybinds.txt`,
+`CurrentGame.dat` and the saves (`savgam00.dat` ...) to `SSHOCK/`.
+
+## Memory
+
+PSRAM (`../core/runtime/m9b.ld`): the image (1 MB) from `0x800000`, then
+data and 2 MB of bss, the heap (5.1 MB; it was 3.7 MB when programs
+loaded at +1 MB) and a 128 KB stack at the top.
+Shockolate, like the Mac version it comes from, assumed much more:
+starting level 1 took 5.3 MB of heap, and a cutscene 17 MB. Now level 1
+takes 2.8 MB and a cutscene about 0.2 MB:
+- **Resource table:** one 34-byte entry for each of the 32768 possible
+  resource ids (1.1 MB); System Shock's go up to $15B1, so 8192 (it grows if
+  need be).
+- **Compound resources** (a texture's sizes, a critter's frames, ...) were
+  read whole when one item was asked for, and the item decoded into a copy
+  next to it. Now only the ref table is read, and each item from the file
+  when first asked for (`RES/Source/refacc.c`, `resload.c`; the 13
+  compressed ones in `MFDART.RES` are still read whole).
+- **Movies** (intro, death, ending, and the audio logs, which are movies
+  without pictures) were copied into memory whole (14 MB for the intro) and
+  their sound unpacked into another buffer (2.5 MB). Now they're read from
+  the file as they play, the video and the sound each through its own file
+  descriptor (`AFILE/Source/movie.c`, `amov.c`), and the sound fed to the
+  mixer a block (8 KB) at a time from an 8-block ring. They're also freed
+  afterwards (upstream kept every one played). The cutscenes are the low
+  resolution ones (320 x 150, `LOW*.RES`, as DOS's 320 x 200 mode had),
+  not the 600 x 300 SVGA ones: a quarter of the decoding.
+
+The host harness limits the game's allocations to 3.7 MB and fills new
+memory with a pattern, as the board would have it; the most it reported
+in use while playing level 1 was 2.8 MB.
+
+## Video
+
+The game draws into its 320 x 200 8 bpp screen (`drawSurface`; the 3D
+view goes through `offscreenDrawSurface`). `SDLDraw()` copies it into one
+of three display buffers, cleans it from the data cache and has the
+vertical-blank interrupt show it (columns doubled, the 200 lines on 2 or 3
+of the 480, as DOS's 320 x 200 filled a 4:3 screen), loading the palette
+(through Shockolate's gamma table, as RGB565) at the same time. The game's
+other modes (Options, Video) are handled the same way (640 x 480 shown as
+it is, with four times the pixels to draw), but haven't been tried.
+
+`../core/tools/m9bctl.py shot OUT.png` takes a screenshot over the UART and
+`m9bctl.py keys ...` types keys.
+
+## Sound
+
+The audio interrupt mixes the next 256 frames of the 48 kHz output at
+24 kHz (each result held for 2 frames), in stereo: the speech stream
+(8-bit 22 kHz, cutscenes and audio logs), then the 12 effect channels:
+the game's VOC samples (8-bit, 11 or 22 kHz), decoded into a signed copy
+when played, with its volume and pan (as SDL_mixer's panning).
+
+## Music
+
+The game's music is adaptive: each theme (`SOUND/SBLASTER/THM*.XMI`,
+`TITLOOP`, `ENDLOOP`, ...) holds up to 54 short XMI sequences, and the music
+AI (`musicai.c`, `mlimbs.c`) starts them one at a time on up to 8 threads,
+the main piece on thread 0 and shorter layers repeated on the others,
+polling `IsPlaying()` to queue the next. Shockolate plays them through an
+OPL emulator or FluidSynth, neither of which fits this CPU, so
+`tools/make_music.sh SSHOCKDIR OUTDIR [--upload]` renders every sequence on
+its own with libADLMIDI (`../core/tools/midirender`: Nuked OPL3, the
+game's own AdLib timbres `SOUND/CIT.AD` over the "AIL (System Shock)" bank,
+Miles' volume model) to `<THEME>_<N>.WAV`, 24 kHz 16-bit mono with one gain
+per theme, so layers keep their balance (the theme's loudness to -18 LUFS,
+its loudest peak at most -1 dBFS). The silent sequences (each theme's
+control sequence 0, placeholders) are left out. 227 files, 35 minutes,
+95 MB; `--upload` puts them in `SSHOCK/MUSIC/`.
+
+`MacTuneLoadTheme` (`port/m9b_sound.c`) reads the theme's music AI tables
+(which piece follows which, the layers, the transitions) from
+`res/sound/<theme>.bin`, the DOS version's `SOUND/THMn.BIN`, as upstream's
+`Xmi.c` does; without them the AI keeps choosing the first piece.
+`port/m9b_sound.c` implements `Xmi.c`'s interface over them: `StartTrack`
+opens the sequence's file on its thread, the main loop (`m9b_sound_poll`)
+keeps each playing thread's 16 KB ring (0.34 s, 128 KB in all) filled, and
+the audio interrupt adds the threads into the mix; a thread whose file
+ends (or has none) stops playing, so the AI queues the next piece as it
+would. `curr_vol_lev` (0..100, ducked by the audio logs) is the volume, 100
+playing the render as it is. Checked in the host harness: the main menu
+plays `TITLOOP_0.WAV` at the music volume (75); in a new game the main
+pieces change (5, 6, 2, 1, 3, 4 ...) with a layer over each, two files open
+at a time.
+
+## The host test harness
+
+`make host` builds `build-host/sshock-host`, the game and port code for
+32-bit x86 Linux (gcc-multilib): the SoC's I/O registers are plain memory
+mapped at their own addresses, a thread keeps the clock counter running,
+and the harness plays the hardware's part from the game loop (vertical
+blanks, audio halves, written to `OUT/audio.wav`; USB keyboard and mouse
+reports from a script; screenshots). It also limits the heap to the
+board's and reports the open files (the board has 40).
+
+```
+tools/host/make_datadir.sh ~/.local/share/Steam/steamapps/common/SS1/SSHOCK /tmp/ss-data
+build-host/sshock-host /tmp/ss-data /tmp/ss-out SCRIPT
+```
+
+with SCRIPT lines like `12000 key 0x29` (time in ms, HID usage: Esc),
+`14000 move 165 107`, `15200 click`, `20000 shot name`, `60000 email 1`
+(opens email 1, as the email panel would), `90000 quit` (see
+`tools/host/host.c`). On the board, Ctrl-E on the UART opens email 1 too.
+
+## Changes to Shockolate
+
+Marked `M9B`:
+- `RES/Source/`: the resource table's size (`res.c`), compound resources
+  read item by item (`refacc.c`, `resload.c`), the files' names kept for
+  reading in place (`resfile.c`, `res.h`), no case-insensitive directory
+  search (`caseless.c`: FatFs is case-insensitive).
+- `AFILE/Source/`: movies read in place and their sound a block at a time
+  (`movie.c`, `amov.c`, `afile.c`, `afile.h`).
+- `GameSrc/cutsloop.c`, `audiolog.c`: the low resolution cutscenes, the
+  sound fed as it plays, the movies freed, a cutscene that can't be opened
+  going back to the menu (upstream went on without a movie and crashed).
+- `GameSrc/tools.c`: a palette read from the file (compound resources' data
+  stay there); a pointer that could be used uninitialized.
+- `2D/Source/RSD/RSDUnpack.c`: the texture unpacker without unaligned
+  word accesses (Building).
+- `FIX/Source/fix.c`: 64-by-32-bit divisions through the hardware divider
+  when the quotient fits (`-DM9B_DIV_STATS` counts the paths).
+- `FIX/Source/fix_sqrt.c`, `3D/Source/vector.c`: integer square roots (the
+  float ones are slow library code without an FPU; `g3_vec_mag` was
+  128-bit `long double`).
+- `MacSrc/Prefs.c`: 320 x 200 by default (Shockolate's is 640 x 480).
+- `UI/Source/event.c`: `uiInit` returned an uninitialized value; a
+  pending click expires at the input's time, not the current one (double
+  clicks at a low frame rate, see Input).
+- `FIXPP/Source/fixpp.h`, `EDMS`: no `<iostream>`; `int` constructors and
+  operators for `Fixpoint` (with `int32_t` being `long`, plain ints were
+  ambiguous).
+- `GameSrc/musicai.c`, `MacSrc/Modding.c`: no OPL synthesizer, no
+  directory listing.
+
+Unmarked, as they're right everywhere: declarations that said `int` where
+the definitions said `int32_t` (or the other way round), which C++ mangles
+differently and C calls conflicting on riscv32 (`afile.c`, `tfdirect.c`,
+EDMS); `fix_pow.c` dropped (its function is also in `fix.c`; upstream's
+static libraries hid the duplicate). Removed from the tree: the SDL
+platform files `port/` replaces, the OpenGL renderer, the MIDI
+synthesizers (`adlmidi`, `MusicSrc`), the `SND` library (upstream didn't
+link it either), CMake files.
+
+## Next steps
+
+- On the board: the heap over a long game; misaligned accesses (2D and 3D
+  structures are `#pragma pack(2)`).
+- Music: check the in-game themes and their layers on the board.
+- Speed: the texture mapper and the frame copy (`make B=build-prof`).
