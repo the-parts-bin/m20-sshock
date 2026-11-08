@@ -1,6 +1,6 @@
 # System Shock (Shockolate, the cross-platform port of the source Night
-# Dive Studios released) for the m9b SoC: builds sshock.bin, which the core
-# firmware's loader copies into PSRAM and runs (see README.md). Requires
+# Dive Studios released) for the m20 SoC: builds sshock.bin, which the core
+# firmware's loader copies into SDRAM and runs (see README.md). Requires
 # riscv64-unknown-elf-gcc/g++ and picolibc-riscv64-unknown-elf.
 #
 # `make host` builds tools/host's test harness instead: the same game and
@@ -12,15 +12,15 @@ CXX     := $(CROSS)g++
 OBJCOPY := $(CROSS)objcopy
 SIZE    := $(CROSS)size
 
-# The m9b core (m9b-core): its firmware (SD card, FatFs) and the runtime the
-# programs share (system calls, trap handler, linker script).
+# The m20 core (../core): its firmware (SD card, the flash disk, FatFs) and
+# the runtime the programs share (system calls, trap handler, linker script).
 CORE ?= ../core
 CORE_FW := $(CORE)/firmware
 CORE_RT := $(CORE)/runtime
 S := shockolate/src
 L := $(S)/Libraries
 
-# Memory map (PSRAM, $(CORE)/runtime/m9b.ld): the image (code, rodata,
+# Memory map (SDRAM, $(CORE)/runtime/m9b.ld): the image (code, rodata,
 # .data) from 0x800000, then bss and the heap up to a 128 KB stack at the
 # top.
 
@@ -41,9 +41,10 @@ CWARN    := -Wno-pointer-sign -Wno-implicit-function-declaration -Wno-int-conver
 # (The game is built as upstream builds it: -fsigned-char, SVGA_SUPPORT.)
 GAMEFLAGS := -fsigned-char -fno-strict-aliasing -fcommon -DSVGA_SUPPORT -DNDEBUG
 
-ARCH     := -march=rv32im_zba_zicbop_zicsr_zifencei_zicbom -mabi=ilp32
+# The m20's CPU: the F extension, and Zicboz (the runtime's memset)
+ARCH     := -march=rv32imf_zba_zicbop_zicsr_zifencei_zicbom_zicboz -mabi=ilp32f
 COMMON   := $(ARCH) -O2 -g --picolibc-buildtype=release -ffunction-sections -fdata-sections \
-            $(GAMEFLAGS) -DM9B -DFF_FS_READONLY=0 $(INCLUDES) $(WARN)
+            $(GAMEFLAGS) -DM9B -DM20 -DFF_FS_READONLY=0 $(INCLUDES) $(WARN)
 CFLAGS   := $(COMMON) -specs=picolibc.specs -std=gnu99 $(CWARN)
 CXXFLAGS := $(COMMON) -specs=picolibcpp.specs -std=gnu++11 -fno-exceptions -fno-rtti
 LDFLAGS  := $(ARCH) -specs=picolibc.specs --picolibc-buildtype=release \
@@ -104,8 +105,8 @@ LIB_CXX := AFILE/Source/draw4x4.cpp AFILE/Source/huffde.cpp FIXPP/Source/fixpp.c
 GAME_SRC := $(GAME:%=$(S)/GameSrc/%.c) $(MAC:%=$(S)/MacSrc/%.c)
 PORT_SRC := $(filter-out port/m9b_posix.c,$(wildcard port/*.c))
 C_SRC    := $(GAME_SRC) $(LIB_C:%=$(L)/%.c) $(PORT_SRC) port/m9b_posix.c \
-            $(CORE_RT)/syscalls.c $(CORE_RT)/string.c $(CORE_RT)/trap.c \
-            $(CORE_FW)/sd.c $(CORE_FW)/diskio.c $(CORE_FW)/fatfs/ff.c $(CORE_FW)/fatfs/ffunicode.c
+            $(CORE_RT)/syscalls.c $(CORE_RT)/string.c $(CORE_RT)/trap.c $(CORE_RT)/shot.c \
+            $(CORE_FW)/sd.c $(CORE_FW)/diskio.c $(CORE_FW)/flashdisk.c $(CORE_FW)/fatfs/ff.c $(CORE_FW)/fatfs/ffunicode.c
 CXX_SRC  := $(LIB_CXX:%=$(L)/%)
 ASM_SRC  := $(CORE_RT)/trap_entry.S
 

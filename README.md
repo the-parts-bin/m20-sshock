@@ -1,4 +1,4 @@
-# System Shock on the m9b SoC
+# System Shock on the m20 SoC
 
 System Shock (1994) as a program for the SoC in `../core`: Shockolate,
 the cross-platform C port of the source Night Dive Studios released in
@@ -6,7 +6,14 @@ the cross-platform C port of the source Night Dive Studios released in
 PSRAM, uses picolibc, and reads the CD version's data from the SD card
 through the core firmware's SD driver and FatFs.
 
-**Status:** it plays on the board, at about 7.4 fps in a saved game (see
+**m20:** this is the m9b port (m9b-sshock at `c2743e2`) moved to the m20:
+the m20's CPU flags (the F extension, Zicboz), its clock (54 MHz, from
+`../core/firmware/clock.h`), its flash disk driver, and video for its
+1280 x 720 picture (720 lines; columns doubled by the line table and, at
+320 wide, once more in the copy). The game's own 320 x 200 fills the
+screen. It builds; it has not run on the board yet.
+
+**On the m9b, status:** it plays on the board, at about 7.4 fps in a saved game (see
 Building), with sound effects and the music (the themes' sequences,
 pre-rendered: Music). In the host test harness (`tools/host/`, the same
 game and port code on 32-bit x86 Linux, held to the board's heap) it

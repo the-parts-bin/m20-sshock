@@ -1,24 +1,23 @@
-// System Shock on the m9b SoC: start-up, video, time and files, in place of
+// System Shock on the m20 SoC: start-up, video, time and files, in place of
 // MacSrc/Shock.c and ShockBitmap.c (SDL).
 //
 // Video: the game draws into drawSurface (8 bpp, gScreenAddress; its 3D
 // view goes through offscreenDrawSurface first). SDLDraw() copies the
 // frame into one of three display buffers, cleans it from the data cache
 // and has the vertical-blank interrupt show it from the next frame, with
-// the palette loaded at the same time. 320-wide modes are shown with
-// columns doubled; every mode's lines are stretched to all 480 (320 x 200:
-// 2 or 3 each, as DOS's 320 x 200 filled a 4:3 screen). 640 x 480 is shown
-// as it is.
+// the palette loaded at the same time. The screen fills the 1280 x 720
+// picture: its rows are spread over the 720 lines (320 x 200: 3 or 4 each,
+// as DOS's 320 x 200 filled the screen), and its columns are doubled by the
+// line table's 2x lines, and once more in the copy when the screen is 320
+// wide (an 8 bpp line fetches up to 768 bytes).
 //
 // Palette: the game's 8-bit entries through Shock.c's gamma table (the
 // gamma setting), as RGB565.
 //
 // Files: everything is under SSHOCK/ on the SD card (see m9b_posix.c).
 //
-// m9b_screenshot() (0x1C on the UART, see m9b_events.c) dumps the screen:
-// "\nM9BSHOT\n", the width and height (16-bit), 256 RGB565 palette entries
-// (little-endian), then the pixels of the buffer on screen
-// (../../core/tools/m9bctl.py shot).
+// m9b_screenshot() (0x1C on the UART, see m9b_events.c) sends the screen
+// for ../../core/tools/m9bctl.py shot (../../core/runtime/shot.c).
 #include <fcntl.h>
 #include <math.h>
 #include <stdarg.h>
@@ -86,7 +85,7 @@ extern int mlook_enabled;
 // Time
 // -------------------------------------------------------------------------
 Uint32 SDL_GetTicks(void) {
-    static uint32_t last, ms, frac;   // CLOCK_CNT (36 MHz) wraps every 119 s
+    static uint32_t last, ms, frac;   // CLOCK_CNT (54 MHz) wraps every 79 s
     uint32_t m = irq_off();           // (also called from the audio interrupt)
     uint32_t now = CLOCK_CNT;
     frac += now - last;
@@ -126,7 +125,9 @@ static volatile int shown = -1, pending = -1;
 static uint32_t pal_words[128];      // the palette in the hardware's format
 static volatile uint32_t pal_dirty;  // load it at the next vertical blank
 static volatile uint32_t vblanks;
-static uint16_t row_of[480];         // the screen row each of the 480 lines shows
+#define LINES 720
+static uint16_t row_of[LINES];       // the screen row each of the 720 lines shows
+static uint32_t disp_w;              // a display buffer's row: scr_w, or 2 scr_w when doubled
 
 static uint32_t line_8bpp(uintptr_t addr) {
     uint32_t off = (uint32_t)addr - PSRAM_BASE;
@@ -143,9 +144,8 @@ void vblank_flip(void) {
     int p = pending;
     if (p < 0) return;
     const uint8_t *buf = disp[p];
-    uint32_t x2 = scr_w <= 360 ? LINE_2X : 0u;
-    for (uint32_t y = 0; y < 480u; y++)
-        VRAM_TABLE[y] = line_8bpp((uintptr_t)&buf[row_of[y] * scr_w]) | x2;
+    for (uint32_t y = 0; y < LINES; y++)
+        VRAM_TABLE[y] = line_8bpp((uintptr_t)&buf[row_of[y] * disp_w]) | LINE_2X;
     shown = p;
     pending = -1;
 }
@@ -173,22 +173,23 @@ static void set_display(int w, int h) {
     if (w == scr_w && h == scr_h) return;
     uint32_t m = irq_off();
     pending = shown = -1;
-    for (uint32_t y = 0; y < 480u; y++) VRAM_TABLE[y] = LINE_BLANK;
+    for (uint32_t y = 0; y < LINES; y++) VRAM_TABLE[y] = LINE_BLANK;
     irq_restore(m);
+    if (w > 640 || h > (int)LINES || (w & 3)) { ERROR("Can't show a %dx%d screen", w, h); return; }
+    uint32_t dw = w <= 320 ? 2u * (uint32_t)w : (uint32_t)w;
     for (int i = 0; i < NBUF; i++) {
         free(disp[i]);
-        disp[i] = aligned_alloc(256, ((size_t)w * h + 255u) & ~255u);
+        disp[i] = aligned_alloc(256, ((size_t)dw * h + 255u) & ~255u);
         if (!disp[i]) { ERROR("No memory for a %dx%d screen", w, h); return; }
-        memset(disp[i], 0, (size_t)w * h);
-        cache_clean(disp[i], (uint32_t)(w * h));
+        memset(disp[i], 0, (size_t)dw * h);
+        cache_clean(disp[i], (uint32_t)(dw * h));
     }
     scr_w = w;
     scr_h = h;
-    for (uint32_t y = 0; y < 480u; y++) row_of[y] = (uint16_t)(y * (uint32_t)h / 480u);
-    uint32_t cols = w <= 360 ? 2u * (uint32_t)w : (uint32_t)w;
-    if (cols > 720u) cols = 720u;
-    uint32_t left = (720u - cols) / 2u;
-    VIDEO_HWIN = (left + cols) << 16 | left;
+    disp_w = dw;
+    for (uint32_t y = 0; y < LINES; y++) row_of[y] = (uint16_t)(y * (uint32_t)h / LINES);
+    uint32_t cols = 2u * dw;   // centred in the 1280 columns
+    VIDEO_HWIN = (640u + cols / 2u) << 16 | (640u - cols / 2u);
     VIDEO_CTRL = 1;
 }
 
@@ -230,8 +231,19 @@ void SDLDraw(void) {
     while (b == shown || b == pending) b++;
     uint32_t c0 = CLOCK_CNT;
     uint32_t n = (uint32_t)(scr_w * scr_h);
-    memcpy(disp[b], drawSurface->pixels, n);
-    cache_clean(disp[b], n);
+    if (disp_w == (uint32_t)scr_w) {
+        memcpy(disp[b], drawSurface->pixels, n);
+    } else {   // each pixel twice: four in, two words out
+        const uint32_t *src = (const uint32_t *)drawSurface->pixels;
+        uint32_t *dst = (uint32_t *)disp[b];
+        for (uint32_t i = 0; i < n / 4u; i++) {
+            uint32_t v = src[i];
+            uint32_t lo = (v & 0xFFu) | (v & 0xFF00u) << 8, hi = (v >> 16 & 0xFFu) | (v >> 8 & 0xFF0000u);
+            dst[2u * i] = lo | lo << 8;
+            dst[2u * i + 1u] = hi | hi << 8;
+        }
+    }
+    cache_clean(disp[b], disp_w * (uint32_t)scr_h);
     m9b_copy_cycles += CLOCK_CNT - c0;
     uint32_t m = irq_off();
     pending = b;
@@ -312,7 +324,7 @@ void m9b_profile_frame(void) {
         frames0 = m9b_frames;
         return;
     }
-    if (dt < 5u * 36000000u) return;
+    if (dt < 5u * CLOCK_HZ) return;
     uint32_t fr = m9b_frames - frames0;
 #ifdef M9B_DIV_STATS
     extern uint32_t m9b_div_fast, m9b_div_lu, m9b_div_slow;
@@ -321,7 +333,7 @@ void m9b_profile_frame(void) {
     m9b_div_fast = m9b_div_lu = m9b_div_slow = 0;
 #endif
     printf("%lu.%lu fps, sound %lu%%, frame copy %lu%%, reads %lu%% (%lu KB), %lu misaligned, heap top %lu KB\n",
-           (unsigned long)(fr * 360000000ull / dt / 10), (unsigned long)(fr * 360000000ull / dt % 10),
+           (unsigned long)(fr * (10ull * CLOCK_HZ) / dt / 10), (unsigned long)(fr * (10ull * CLOCK_HZ) / dt % 10),
            (unsigned long)((uint64_t)(sound_cycles - snd0) * 100 / dt),
            (unsigned long)((uint64_t)(m9b_copy_cycles - cp0) * 100 / dt),
            (unsigned long)((uint64_t)(m9b_read_cycles - rd0) * 100 / dt), (unsigned long)((m9b_read_bytes - rb0) / 1024),
@@ -340,24 +352,15 @@ void m9b_profile_frame(void) {
 // -------------------------------------------------------------------------
 // Screenshots over the UART
 // -------------------------------------------------------------------------
-static void uart_raw(uint8_t c) {
-    while (UART_STATUS & 1u) {
-    }
-    UART_DATA = c;
-}
+
+extern void m20_screenshot(uint32_t w, uint32_t h, const uint16_t *pal565,
+                           const uint8_t *pixels, uint32_t stride);   // ../../core/runtime/shot.c
 
 void m9b_screenshot(void) {
-    static const char tag[] = "\nM9BSHOT\n";
-    for (const char *s = tag; *s; s++) uart_raw((uint8_t)*s);
-    uart_raw((uint8_t)scr_w); uart_raw((uint8_t)(scr_w >> 8));
-    uart_raw((uint8_t)scr_h); uart_raw((uint8_t)(scr_h >> 8));
-    for (uint32_t i = 0; i < 128u; i++) {
-        uint32_t w = pal_words[i];
-        uart_raw((uint8_t)w); uart_raw((uint8_t)(w >> 8));
-        uart_raw((uint8_t)(w >> 16)); uart_raw((uint8_t)(w >> 24));
-    }
-    const uint8_t *px = shown >= 0 ? disp[shown] : drawSurface ? drawSurface->pixels : NULL;
-    for (int32_t i = 0; px && i < scr_w * scr_h; i++) uart_raw(px[i]);
+    // (a doubled display buffer has every pixel twice: the draw surface then)
+    const uint8_t *px = shown >= 0 && disp_w == (uint32_t)scr_w ? disp[shown]
+                        : drawSurface ? drawSurface->pixels : NULL;
+    if (px) m20_screenshot((uint32_t)scr_w, (uint32_t)scr_h, (const uint16_t *)pal_words, px, (uint32_t)scr_w);
 }
 
 // -------------------------------------------------------------------------

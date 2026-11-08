@@ -1,4 +1,4 @@
-// System Shock on the m9b SoC: the CPU-specific bits the port shares
+// System Shock on the m20 SoC: the CPU-specific bits the port shares
 // (interrupt masking, data cache cleaning, start-up). Elsewhere (the host
 // test build, tools/host/) they do nothing.
 #ifndef M9B_HW_H
@@ -7,8 +7,8 @@
 #include <stdint.h>
 #include "m9b_map.h"
 
-#define CLOCK_CNT    (*(volatile uint32_t*)(M9B_TIMING + 0xCu))   // 36 MHz
-#define CLOCK_PER_MS 36000u
+#include "clock.h"   // CLOCK_HZ, CLOCK_PER_MS: ../../core/firmware
+#define CLOCK_CNT    (*(volatile uint32_t*)(M9B_TIMING + 0xCu))   // CLOCK_HZ
 #define PSRAM_BASE   M9B_PSRAM_BASE
 
 // Masks interrupts; returns what irq_restore() needs.
