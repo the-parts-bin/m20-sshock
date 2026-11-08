@@ -44,7 +44,7 @@ GAMEFLAGS := -fsigned-char -fno-strict-aliasing -fcommon -DSVGA_SUPPORT -DNDEBUG
 # The m20's CPU: the F extension, and Zicboz (the runtime's memset)
 ARCH     := -march=rv32imf_zba_zicbop_zicsr_zifencei_zicbom_zicboz -mabi=ilp32f
 COMMON   := $(ARCH) -O2 -g --picolibc-buildtype=release -ffunction-sections -fdata-sections \
-            $(GAMEFLAGS) -DM9B -DM20 -DFF_FS_READONLY=0 $(INCLUDES) $(WARN)
+            $(GAMEFLAGS) -DM9B -DM20 -DM20_ENGINE -DFF_FS_READONLY=0 $(INCLUDES) $(WARN)
 CFLAGS   := $(COMMON) -specs=picolibc.specs -std=gnu99 $(CWARN)
 CXXFLAGS := $(COMMON) -specs=picolibcpp.specs -std=gnu++11 -fno-exceptions -fno-rtti
 LDFLAGS  := $(ARCH) -specs=picolibc.specs --picolibc-buildtype=release \

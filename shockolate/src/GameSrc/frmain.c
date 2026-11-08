@@ -106,7 +106,17 @@ int fr_rend(frc *view) {
         // synchronous_update();            // One more time
         //    	ClearCache(_fr->draw_canvas.bm.bits, (_fr->draw_canvas.bm.row >> 5) * _fr->ywid);
         // printf(" fr_pipe_go_3\n");
+#ifdef M20_ENGINE
+        {   // M20: the span engine draws the main view's walls (port/m20_engine.c)
+            extern int m20_engine_on, m20_main_view;
+            extern uchar view360_is_rendering;
+            m20_engine_on = m20_main_view && !(_fr_curflags & FR_PICKUPM_MASK) && !DoubleSize && !view360_is_rendering;
+        }
+#endif
         fr_pipe_go_3(); /* actually render the stuff */
+#ifdef M20_ENGINE
+        { extern int m20_engine_on; m20_engine_on = 0; }
+#endif
 
         // printf(" fr_pipe_end\n");
         fr_pipe_end(); /* clean environment up */

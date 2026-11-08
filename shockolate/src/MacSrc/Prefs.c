@@ -115,7 +115,9 @@ void SetDefaultPrefs(void) {
     gShockPrefs.soMusicVolume = 75;
     gShockPrefs.soSfxVolume = 100;
     gShockPrefs.soAudioLogVolume = 100;
-#ifdef M9B
+#if defined(M20)
+    gShockPrefs.doVideoMode = 3; // M20: 640 x 480, the SVGA mode (the span engine draws the walls)
+#elif defined(M9B)
     gShockPrefs.doVideoMode = 0; // M9B: 320 x 200 (the CPU draws every pixel)
 #else
     gShockPrefs.doVideoMode = 3;

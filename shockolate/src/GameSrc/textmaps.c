@@ -237,6 +237,17 @@ void load_textures(void) {
             }
         }
     }
+#ifdef M20_ENGINE
+    {   // M20: the textures for the span engine (port/m20_engine.c)
+        extern void m20_tex_loaded(int slot, uchar *p, uint32_t n, const uint32_t *pal);
+        extern const uint32_t *m20_video_pal888(uint32_t *generation);
+        uint32_t gen;
+        const uint32_t *pal = m20_video_pal888(&gen);
+        m20_tex_loaded(0, tmap_static_mem, NUM_STATIC_TMAPS * SIZE_STATIC_TMAP, pal);
+        if (all_textures)
+            m20_tex_loaded(1, tmap_dynamic_mem, NUM_STATIC_TMAPS * (128 * 128), pal);
+    }
+#endif
     // Load in texture properties for all textures
     load_master_texture_properties();
 

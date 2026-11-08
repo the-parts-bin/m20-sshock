@@ -241,6 +241,18 @@ static void poll_uart(void) {
         }
         if (c == 27) { esc_state = 1; esc_time = now; }
         else if (c == 0x1Cu) m9b_screenshot();
+#ifdef M20_ENGINE
+        else if (c == 0x04u) {   // Ctrl-D (debugging): the 8 bpp screen as the game drew it
+            extern void m20_screenshot_screen(void);
+            m20_screenshot_screen();
+        }
+        else if (c == 0x0Bu) {   // Ctrl-K: the span engine off and on (port/m20_engine.c)
+            extern int m20_engine_enable;
+            m20_engine_enable = (m20_engine_enable + 1) & 3;   // all, walls only, floors and the rest, off
+            static const char *const what[4] = {"off", "on", "on for the walls", "on for floors and the rest"};
+            printf("span engine %s\n", what[m20_engine_enable]);
+        }
+#endif
         else if (c == 0x05u) {   // Ctrl-E: opens email 1 (tests: tools/newgame.sh)
             extern void read_email(int new_base, int num);
             printf("uart: email 1\n");

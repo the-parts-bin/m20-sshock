@@ -592,6 +592,20 @@ int draw_tmap_common(int n, g3s_phandle *vp, grs_bitmap *bm) {
         }
     }
 
+#ifdef M20_ENGINE
+    {   // M20: the span engine's, if it takes it (port/m20_engine.c)
+        extern int m20_engine_on;
+        extern int m20_engine_tmap(grs_bitmap * bm, int n, grs_vertex *vl, const fix *z, int lit, int wall);
+        if (m20_engine_on && _n_verts <= 32) {
+            fix zz[32];
+            for (i = 0; i < _n_verts; i++)
+                zz[i] = _vbuf2[i]->gZ;
+            if (m20_engine_tmap(bm, _n_verts, p_vlist, zz, light_flag, tmap_func == (void *)&v_umap))
+                return CLIP_NONE;
+        }
+    }
+#endif
+
     if (!light_flag) {
         ((void (*)(grs_bitmap * bm, int n, grs_vertex **vpl, grs_tmap_info *ti)) tmap_func)(bm, _n_verts, p_vpl, &ti);
         return CLIP_NONE;

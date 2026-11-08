@@ -10,8 +10,61 @@ through the core firmware's SD driver and FatFs.
 the m20's CPU flags (the F extension, Zicboz), its clock (54 MHz, from
 `../core/firmware/clock.h`), its flash disk driver, and video for its
 1280 x 720 picture (720 lines; columns doubled by the line table and, at
-320 wide, once more in the copy). The game's own 320 x 200 fills the
-screen. It builds; it has not run on the board yet.
+320 wide, once more in the copy). It starts in the game's SVGA mode,
+640 x 480 (`MacSrc/Prefs.c`; 320 x 200 can still be chosen in the game's
+options or `SSHOCK/prefs.txt`), and the span engine
+(`../core/rtl/span_engine.v`) draws the 3D view's walls, floors and
+ceilings (below).
+
+## The span engine
+
+`port/m20_engine.c` takes the main view's texture-mapped polygons whose
+bitmap is one of the level's textures (`draw_tmap_common`,
+`3D/Source/tmap.c`) and has the span engine draw them, RGB565 with
+perspective-correct texturing, straight into the frame shown, at the
+view's place on the screen; the CPU draws everything else (objects,
+sprites, the overlays, the interface) into the game's 8 bpp canvases as
+before. Under each engine span the view's canvas gets holes (colour 255),
+which its copy to the screen keeps, and `SDLDraw()` writes the screen's
+other pixels over the engine's through the palette: whichever drew a pixel
+last wins (as in `../descent`). The polygon's spans come from the port's
+own scan conversion (Shock's pixel rule, clipped to the 2D clip rectangle);
+the light per vertex (one of the shading table's 16 rows) becomes a small
+lightmap, each row matched as one brightness factor. The textures are
+cleaned from the data cache and their colours moved off 224..255 (which
+the engine leaves unlit) when a level's textures are loaded (`textmaps.c`).
+
+Memory decides the frame's layout: the heap had about 130 KB to spare at
+640 x 480, so whole RGB565 frames (three of 614 KB) don't fit. A display
+buffer holds just the rows the view covers (259), RGB565; the line table
+shows the other rows straight from the game's screen (8 bpp, the
+interface, which rarely changes), and the interface columns beside the
+view are converted only when they change (a checksum per row and buffer).
+Frames without the engine (menus, cutscenes) are shown 8 bpp as before.
+The engine is used at 640 x 480 with the view in its slot (not in the
+full-screen view or at 320 x 200).
+
+Ctrl-K on the terminal cycles the engine: all, walls only (the game's
+vertical wall mapper), floors and the rest, off. Ctrl-D sends the 8 bpp
+screen as the game drew it (with its holes), for debugging. The profile
+build (below) also prints the engine's counters every 5 s.
+
+Measured on the board (2026-11-08, level 1's first room, `make
+B=build-prof`):
+
+| 640 x 480 | fps |
+|---|---|
+| the CPU (the m9b port's mappers) | 5.2 |
+| the span engine | 10.2 |
+| (320 x 200, the CPU) | 11.6 |
+
+What's left is mostly the CPU's: each engine polygon's setup and spans
+(20%), the composing (12%), the game. The engine is under 40% busy, with
+many texel cache misses on the 128 x 128 textures seen at an angle (its
+cache is 2 KB, direct-mapped); giving it the 64 x 64 versions halved the
+misses but gained only 3%. Open: now and then `ResLock: Could not load
+112` (not seen without the engine's buffers, which take 93 KB more than
+the 8 bpp ones did).
 
 **On the m9b, status:** it plays on the board, at about 7.4 fps in a saved game (see
 Building), with sound effects and the music (the themes' sequences,

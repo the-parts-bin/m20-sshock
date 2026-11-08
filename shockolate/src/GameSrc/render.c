@@ -338,7 +338,13 @@ errtype render_run(void) {
         rendrect = mainview_region->r;
 
         // printf("fr_rend\n");
+#ifdef M20_ENGINE
+        { extern int m20_main_view; m20_main_view = 1; }   // M20: the span engine may draw it (frmain.c)
+#endif
         fr_rend(NULL);
+#ifdef M20_ENGINE
+        { extern int m20_main_view; m20_main_view = 0; }
+#endif
 
         if (view360_render_on)
             view360_render();
