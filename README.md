@@ -2,8 +2,8 @@
 
 System Shock (1994) as a program for the SoC in `../core`: Shockolate,
 the cross-platform C port of the source Night Dive Studios released in
-2018, with an m9b platform layer in place of its SDL one. It runs from
-PSRAM, uses picolibc, and reads the CD version's data from the SD card
+2018, with an m9b/m20 platform layer in place of its SDL one. It runs from
+SDRAM, uses picolibc, and reads the CD version's data from the SD card
 through the core firmware's SD driver and FatFs.
 
 **m20:** this is the m9b port (m9b-sshock at `c2743e2`) moved to the m20:
@@ -66,9 +66,10 @@ misses but gained only 3%. Open: now and then `ResLock: Could not load
 112` (not seen without the engine's buffers, which take 93 KB more than
 the 8 bpp ones did).
 
-**On the m9b, status:** it plays on the board, at about 7.4 fps in a saved game (see
-Building), with sound effects and the music (the themes' sequences,
-pre-rendered: Music). In the host test harness (`tools/host/`, the same
+**Status:** it plays on the m20 board at 640 x 480 with the span engine
+(above), with sound effects and the music (the themes' sequences,
+pre-rendered: Music). (On the m9b it played at about 7.4 fps in a saved
+game, 320 x 200 on the CPU.) In the host test harness (`tools/host/`, the same
 game and port code on 32-bit x86 Linux, held to the board's heap) it
 plays too: the splash screens, the intro, the menus, a new game, walking
 around level 1, sound effects, saving.
@@ -149,10 +150,11 @@ of the vertical blank; `-DPROF_MEMCPY_CALLERS=<memcpy's size>` counts
 `memcpy`'s samples at its callers; `-DM9B_DIV_STATS` counts the fixed-point
 divisions by path (one hardware divide, the 64-by-32-bit routine, libgcc).
 The first 15 s window includes the menus (which redraw at 200 fps):
-leave it out when looking at the game.
+leave it out when looking at the game. With the engine the report adds the
+frames by kind, the composing's time and the engine's counters.
 
-Speed-ups so far (5.8 to 6.9 fps in a saved game, then 7.4 with the
-core's radix-4 divider): the texture unpacker (`RSD/RSDUnpack.c`, M9B)
+The m9b port's speed-ups (5.8 to 6.9 fps in a saved game, then 7.4 with the
+core's radix-4 divider), which the m20 keeps: the texture unpacker (`RSD/RSDUnpack.c`, M9B)
 without unaligned word accesses (97% of the misaligned accesses the trap
 handler emulated), and the fixed-point divisions (`FIX/Source/fix.c`)
 through the hardware divider (`../core/firmware/m9b_div.h`) instead of
@@ -160,9 +162,8 @@ libgcc's `__divdi3`.
 
 The game data goes in `data/` (`data/README.md` says what goes there).
 The whole card, all the games with their data and music, is built in
-m9b-system, which has this repository as a submodule:
-`../sdcard/make_sdcard.sh` (see `../sdcard/README.md`) takes the data from
-here. The scripts below add or replace files on a card in the board,
+m20-system, which has this repository as a submodule:
+`../sdcard/make_sdcard.sh` takes the data from here. The scripts below add or replace files on a card in the board,
 through the serial port.
 
 The card needs `SSHOCK/RES/DATA/`: `tools/put_data.sh
@@ -177,9 +178,11 @@ build/sshock.bin SSHOCK.BIN`). The game writes `prefs.txt`, `keybinds.txt`,
 
 ## Memory
 
-PSRAM (`../core/runtime/m9b.ld`): the image (1 MB) from `0x800000`, then
-data and 2 MB of bss, the heap (5.1 MB; it was 3.7 MB when programs
-loaded at +1 MB) and a 128 KB stack at the top.
+SDRAM (`../core/runtime/m9b.ld`): the image (1 MB) from `0x800000`, then
+data and 2 MB of bss, the heap (5.1 MB; it was 3.7 MB on the m9b when
+programs loaded at +1 MB) and a 128 KB stack at the top. At 640 x 480 the
+heap's top reaches about 4.9 MB, with the display buffers sized to fit
+(The span engine).
 Shockolate, like the Mac version it comes from, assumed much more:
 starting level 1 took 5.3 MB of heap, and a cutscene 17 MB. Now level 1
 takes 2.8 MB and a cutscene about 0.2 MB:
@@ -207,14 +210,15 @@ in use while playing level 1 was 2.8 MB.
 
 ## Video
 
-The game draws into its 320 x 200 8 bpp screen (`drawSurface`; the 3D
-view goes through `offscreenDrawSurface`). `SDLDraw()` copies it into one
-of three display buffers, cleans it from the data cache and has the
-vertical-blank interrupt show it (columns doubled, the 200 lines on 2 or 3
-of the 480, as DOS's 320 x 200 filled a 4:3 screen), loading the palette
-(through Shockolate's gamma table, as RGB565) at the same time. The game's
-other modes (Options, Video) are handled the same way (640 x 480 shown as
-it is, with four times the pixels to draw), but haven't been tried.
+The game draws into its 8 bpp screen (`drawSurface`, 640 x 480; the 3D
+view goes through `offscreenDrawSurface`). Without the span engine,
+`SDLDraw()` copies it into one of three display buffers, cleans it from the
+data cache and has the vertical-blank interrupt show it, its rows spread
+over the 720 lines (480 on 1 or 2 each; 200 on 3 or 4 at 320 x 200, its
+columns doubled once more in the copy), loading the palette (through
+Shockolate's gamma table, as RGB565) at the same time. Frames the engine
+drew in show the view's rows in RGB565 and the rest from the screen
+itself (The span engine).
 
 `../core/tools/m9bctl.py shot OUT.png` takes a screenshot over the UART and
 `m9bctl.py keys ...` types keys.
@@ -278,6 +282,8 @@ with SCRIPT lines like `12000 key 0x29` (time in ms, HID usage: Esc),
 `14000 move 165 107`, `15200 click`, `20000 shot name`, `60000 email 1`
 (opens email 1, as the email panel would), `90000 quit` (see
 `tools/host/host.c`). On the board, Ctrl-E on the UART opens email 1 too.
+(The host build doesn't link at the moment: `m20_screenshot`, from the
+core's runtime, is missing there.)
 
 ## Changes to Shockolate
 
@@ -324,4 +330,8 @@ link it either), CMake files.
 - On the board: the heap over a long game; misaligned accesses (2D and 3D
   structures are `#pragma pack(2)`).
 - Music: check the in-game themes and their layers on the board.
-- Speed: the texture mapper and the frame copy (`make B=build-prof`).
+- Speed: each engine polygon's setup, the composing, the on-line help's
+  object scan (`olh_scan_objs`); the engine's texel misses on 128 x 128
+  textures (`make B=build-prof`).
+- The occasional `ResLock: Could not load 112` at 640 x 480 (memory?).
+- The host build's link.
