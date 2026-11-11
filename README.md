@@ -99,7 +99,7 @@ the clicks) is raised from 5 pixels to 16 (`port/m9b_shock.c`): at 5, a
 tiny hand movement broke most double clicks. How quickly the second click
 has to follow is the game's own setting (Options, Input: Double click).
 
-**License:** GPL v3 (`shockolate/LICENSE`). The game data isn't free and
+**License:** GPL v3 (`LICENSE`, a copy of `shockolate/LICENSE`), the port included. The game data isn't free and
 isn't in the repository; it comes from an installed CD version (e.g.
 Steam's "System Shock: Classic", whose `SS1/SSHOCK` is the CD install).
 
