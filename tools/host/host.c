@@ -356,3 +356,12 @@ int __wrap_main(int argc, char **argv) {
     USB(1, 0x00) = 2u;   // a mouse on port 1
     return __real_main(1, argv);
 }
+
+// The board's UART screenshots (../../core/runtime/shot.c): none here (the
+// script's "shot" saves the screen)
+void m20_screenshot(uint32_t w, uint32_t h, const uint16_t *pal565, const uint8_t *pixels, uint32_t stride) {
+    (void)w; (void)h; (void)pal565; (void)pixels; (void)stride;
+}
+void m20_screenshot16(uint32_t w, uint32_t h, const uint16_t *pixels, uint32_t stride) {
+    (void)w; (void)h; (void)pixels; (void)stride;
+}

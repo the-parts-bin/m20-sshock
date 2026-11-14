@@ -29,6 +29,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "GlobalV.h"
 #include "lg.h"
 #include "OpenGL.h"
+#ifdef M20_ENGINE   // M20: the box the CPU draws into, for the span engine (port/m20_engine.c)
+extern void m20_cpu_drew(fix x0, fix y0, fix x1, fix y1);
+extern void m20_cpu_drew_list(int n, grs_vertex **vpl);
+#endif
 
 // prototypes
 int check_and_draw_common(long c, int n_verts, g3s_phandle *p);
@@ -321,6 +325,9 @@ draw_poly_common_raw:
     }
 
     // draw it
+#ifdef M20_ENGINE
+    m20_cpu_drew_list(n_verts, p_vpl);
+#endif
     ((void (*)(long c, int n, grs_vertex **vpl))grd_canvas_table[poly_index[gour_flag]])(poly_color, n_verts, p_vpl);
 
     return CLIP_NONE;
@@ -339,6 +346,9 @@ int g3_draw_point(g3s_phandle p) {
 
     sx = (p->sx + 0x08000) >> 16; // round & get int part
     sy = (p->sy + 0x08000) >> 16; // round & get int part
+#ifdef M20_ENGINE
+    m20_cpu_drew(p->sx, p->sy, p->sx, p->sy);
+#endif
     return (((int (*)(short x, short y))grd_canvas_table[DRAW_POINT])(sx, sy));
 }
 
@@ -396,6 +406,9 @@ int draw_line_common(g3s_phandle p0, g3s_phandle p1) {
 
     if (draw_color == 255)
         draw_color = 0;
+#ifdef M20_ENGINE
+    m20_cpu_drew(lg_min(p0->sx, p1->sx), lg_min(p0->sy, p1->sy), lg_max(p0->sx, p1->sx), lg_max(p0->sy, p1->sy));
+#endif
 
     if (gour_flag == 0) // normal line
     {

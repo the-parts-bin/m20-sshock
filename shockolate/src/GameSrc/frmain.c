@@ -110,12 +110,21 @@ int fr_rend(frc *view) {
         {   // M20: the span engine draws the main view's walls (port/m20_engine.c)
             extern int m20_engine_on, m20_main_view;
             extern uchar view360_is_rendering;
-            m20_engine_on = m20_main_view && !(_fr_curflags & FR_PICKUPM_MASK) && !DoubleSize && !view360_is_rendering;
+            extern int m20_engine_begin(void);
+            m20_engine_on = m20_main_view && !(_fr_curflags & FR_PICKUPM_MASK) && !DoubleSize && !view360_is_rendering &&
+                            m20_engine_begin();
         }
 #endif
         fr_pipe_go_3(); /* actually render the stuff */
 #ifdef M20_ENGINE
-        { extern int m20_engine_on; m20_engine_on = 0; }
+        {
+            extern int m20_engine_on;
+#ifdef M20_CHECK
+            extern void m20_engine_render_end(void);
+            if (m20_engine_on) m20_engine_render_end();
+#endif
+            m20_engine_on = 0;
+        }
 #endif
 
         // printf(" fr_pipe_end\n");

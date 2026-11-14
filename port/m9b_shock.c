@@ -155,6 +155,7 @@ static uint32_t view_y0, view_h;     // those rows
 static uint32_t view_x, view_w;      // the view's columns in them (the rest: the interface)
 static uint32_t side_sum[NBUF][MAX_VIEW_ROWS];   // each row's interface columns as a buffer has them (a checksum)
 static uint16_t pal565[256];
+const uint16_t *m20_video_pal565(void) { return pal565; }
 static uint32_t pal888[256], pal_gen;
 static int world = -1;               // the display buffer with the last engine frame
 static int has_holes;
@@ -327,6 +328,62 @@ uint16_t *m20_video_engine_target(uint32_t *stride, int w, int h) {
     return (uint16_t *)disp[b] + x;
 }
 
+// A row of the view (view_w pixels from the 8 bpp s4) over its RGB565 row
+// d: what isn't a hole, four pixels at a time (all holes is the common
+// case), 16 when they're all holes; each line written leaves the data
+// cache once done with. reset: leaves the source all holes. Returns the
+// pixels written.
+static uint32_t scan_row(uint32_t *s4, uint16_t *dv, uint32_t *holes, int reset) {
+    uintptr_t line = 0;
+    uint32_t nw = view_w / 4u, written = 0;
+    for (uint32_t g = 0; g < nw; g += 4u) {   // the next line prefetched
+        if (!(((uintptr_t)(s4 + g)) & 63u)) asm volatile("prefetch.r 64(%0)" :: "r"(s4 + g) : "memory");
+        uint32_t ge = g + 4u > nw ? nw : g + 4u;
+        if (ge == g + 4u && (s4[g] & s4[g + 1] & s4[g + 2] & s4[g + 3]) == 0xFFFFFFFFu) { *holes += 16; continue; }
+        for (uint32_t i = g; i < ge; i++) {
+            uint32_t v = s4[i];
+            if (v == 0xFFFFFFFFu) { *holes += 4; continue; }
+            if (reset) s4[i] = 0xFFFFFFFFu;
+            uint16_t *d = dv + 4u * i;
+            uintptr_t l = (uintptr_t)d & ~(uintptr_t)63;
+            if (l != line) {
+                if (line) asm volatile("cbo.flush (%0)" :: "r"(line) : "memory");
+                line = l;
+            }
+            for (uint32_t k = 0; k < 4u; k++, v >>= 8) {
+                uint32_t c = v & 0xFFu;
+                if (c == M20_HOLE) (*holes)++;
+                else { d[k] = pal565[c]; written++; }
+            }
+        }
+    }
+    if (line) asm volatile("cbo.flush (%0)" :: "r"(line) : "memory");
+    return written;
+}
+
+// The view canvas, at its copy to the screen in an engine frame (frsetup.c
+// fr_send_view, the engine idle): composed onto the engine's frame instead,
+// and left all holes (the next frame's clear left out: m20_engine.c). The
+// screen's view rows are left as holes then (once), so the frames composed
+// over this one see nothing there. 0: not this layout.
+static int view_sent, screen_holes;
+int m20_video_send(uint8_t *bits, int row, int w, int h) {
+    if ((uint32_t)w != view_w || (uint32_t)h != view_h || (row & 3) || ((uintptr_t)bits & 3u)) return 0;
+    uint32_t t = CLOCK_CNT, holes = 0, written = 0;
+    uint16_t *v16 = (uint16_t *)disp[eng_b] + view_x;
+    for (uint32_t y = 0; y < view_h; y++)
+        written += scan_row((uint32_t *)(bits + y * (uint32_t)row), v16 + y * (uint32_t)scr_w, &holes, 1);
+    if (!screen_holes) {   // the screen's view rows as the copy would leave them: holes (once; what's drawn there later stays)
+        uint8_t *scr = drawSurface->pixels;
+        for (uint32_t y = 0; y < view_h; y++) memset(scr + (view_y0 + y) * (uint32_t)scr_w + view_x, M20_HOLE, view_w);
+        screen_holes = 1;
+    }
+    m20_scan_cycles += CLOCK_CNT - t;
+    m20_scan_written += written;
+    view_sent = 1;
+    return 1;
+}
+
 // The frame in display buffer b: the view's rows as RGB565, the screen's
 // pixels over the engine's (holes keep them); engine: this frame's are in
 // b, else the last engine frame's are (in world). The other rows are shown
@@ -346,6 +403,9 @@ static void compose(int b, int engine) {
         memcpy(v16, disp[world], 2u * n);
         memcpy(side_sum[b], side_sum[world], sizeof(side_sum[b]));
     }
+    int sent = engine && view_sent;
+    view_sent = 0;
+    if (!sent) screen_holes = 0;
     uint32_t t1 = CLOCK_CNT, written = 0;
     for (uint32_t y = 0; y < view_h; y++) {
         const uint8_t *srow = src + (view_y0 + y) * w;
@@ -362,34 +422,14 @@ static void compose(int b, int engine) {
             cache_flush(drow + view_x + view_w, 2u * (w - view_x - view_w));
             written += w - view_w;
         }
-        // the view: four pixels at a time (all holes is the common case);
-        // each line written leaves the data cache once done with
-        const uint32_t *s4 = (const uint32_t *)(srow + view_x);
-        uint16_t *dv = drow + view_x;
-        uintptr_t line = 0;
-        for (uint32_t i = 0; i < view_w / 4u; i++) {
-            uint32_t v = s4[i];
-            if (v == 0xFFFFFFFFu) { holes += 4; continue; }
-            uint16_t *d = dv + 4u * i;
-            uintptr_t l = (uintptr_t)d & ~(uintptr_t)63;
-            if (l != line) {
-                if (line) asm volatile("cbo.flush (%0)" :: "r"(line) : "memory");
-                line = l;
-            }
-            for (uint32_t k = 0; k < 4u; k++, v >>= 8) {
-                uint32_t c = v & 0xFFu;
-                if (c == M20_HOLE) holes++;
-                else { d[k] = pal565[c]; written++; }
-            }
-        }
-        if (line) asm volatile("cbo.flush (%0)" :: "r"(line) : "memory");
+        if (!sent) written += scan_row((uint32_t *)(srow + view_x), drow + view_x, &holes, 0);
     }
     m20_scan_cycles += CLOCK_CNT - t1;
     m20_scan_written += written;
     if (copied) cache_flush(v16, 2u * n);
     world = b;
     disp_fmt[b] = 1;
-    has_holes = holes != 0;
+    has_holes = sent || holes != 0;
 }
 #endif
 
@@ -415,6 +455,8 @@ void SDLDraw(void) {
     } else {
     disp_fmt[b] = 0;
     n_plain++;
+    view_sent = screen_holes = 0;
+    memset(side_sum[b], 0xFF, sizeof(side_sum[b]));   // (8 bpp now: its interface columns to be redrawn)
 #endif
     if (disp_w == (uint32_t)scr_w) {
         memcpy(disp[b], drawSurface->pixels, n);
@@ -555,6 +597,13 @@ void m9b_profile_frame(void) {
         extern unsigned int m20_tmap_cycles;
         printf("  engine polygons (setup and spans) %u%% of the time\n", (unsigned)((uint64_t)m20_tmap_cycles * 100 / dt));
         m20_tmap_cycles = 0;
+        extern unsigned int m20_flush_cycles, m20_flushes, m20_flush_px, m20_fb_trans, m20_fb_tex, m20_fb_other;
+        printf("  CPU drawing composed %u%% (%u times, %u pixels); CPU polygons: %u transparent, %u not level textures, %u other\n",
+               (unsigned)((uint64_t)m20_flush_cycles * 100 / dt), m20_flushes, m20_flush_px, m20_fb_trans, m20_fb_tex, m20_fb_other);
+        m20_flush_cycles = m20_flushes = m20_flush_px = m20_fb_trans = m20_fb_tex = m20_fb_other = 0;
+        extern unsigned int m20_rsd_hits, m20_rsd_misses;
+        printf("  RSD bitmaps: %u unpacked, %u from the cache\n", m20_rsd_misses, m20_rsd_hits);
+        m20_rsd_hits = m20_rsd_misses = 0;
         m20_engine_faces = m20_engine_spans = m20_engine_wait_cycles = 0;
     }
 #endif

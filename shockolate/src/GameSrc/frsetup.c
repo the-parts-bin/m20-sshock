@@ -777,7 +777,15 @@ int fr_start_view(void) {
         _fr->horizon_call(&_fr->draw_canvas.bm, _fr_curflags);
     // KLC      else if (global_fullmap->cyber)
 
+#ifdef M20_ENGINE
+    {   // M20: not if the canvas is all M20_HOLE already (port/m20_engine.c)
+        extern int m20_canvas_clean(void);
+        if (!m20_canvas_clean() || _frp.view.clear_color != 0xFF)
+            gr_clear(_frp.view.clear_color);
+    }
+#else
     gr_clear(_frp.view.clear_color);
+#endif
 
     // HAX HAX HAX Why is this not 0 already?
     // gr_clear(0);
@@ -804,6 +812,9 @@ g3s_vector zvec = {0, 0, 0};
 
 extern uchar view360_is_rendering;
 
+#ifdef M20_ENGINE
+extern int m20_engine_send(grs_bitmap *bm);
+#endif
 int fr_send_view(void) {
     uchar snd_frm = TRUE;
     bool ok_to_double;
@@ -893,6 +904,10 @@ int fr_send_view(void) {
                 {
                     if (full_game_3d)
                         Fast_FullScreen_Copy(&_fr->draw_canvas.bm);
+#ifdef M20_ENGINE
+                    else if (m20_engine_send(&_fr->draw_canvas.bm))
+                        ;   // M20: composed onto the span engine's frame (port/m20_engine.c)
+#endif
                     else
                         Fast_Slot_Copy(&_fr->draw_canvas.bm);
                 }

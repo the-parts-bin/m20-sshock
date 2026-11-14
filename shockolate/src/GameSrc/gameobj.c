@@ -1033,6 +1033,12 @@ void show_obj(ObjID cobjid) {
         g3_start_object_angles_xyz(&_fr_p, _fr_cobj->loc.p << 8, _fr_cobj->loc.h << 8, _fr_cobj->loc.b << 8,
                                    ANGLE_ORDER);
         vx_init_vox(&vvv, pdist, psize, VOXEL_DEPTH, bitmaps_3d[o3drep], bitmaps_3d[o3drep + 1]);
+#ifdef M20_ENGINE
+        {   // M20: voxels draw straight in 2D: the whole view for the span engine (port/m20_engine.c)
+            extern void m20_cpu_drew(fix x0, fix y0, fix x1, fix y1);
+            m20_cpu_drew(0, 0, fix_make(4095, 0), fix_make(4095, 0));
+        }
+#endif
         vx_render(&vvv);
         g3_end_object();
     } break;

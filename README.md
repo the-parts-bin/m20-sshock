@@ -24,13 +24,22 @@ bitmap is one of the level's textures (`draw_tmap_common`,
 perspective-correct texturing, straight into the frame shown, at the
 view's place on the screen; the CPU draws everything else (objects,
 sprites, the overlays, the interface) into the game's 8 bpp canvases as
-before. Under each engine span the view's canvas gets holes (colour 255),
-which its copy to the screen keeps, and `SDLDraw()` writes the screen's
-other pixels over the engine's through the palette: whichever drew a pixel
-last wins (as in `../descent`). The polygon's spans come from the port's
-own scan conversion (Shock's pixel rule, clipped to the 2D clip rectangle);
-the light per vertex (one of the shading table's 16 rows) becomes a small
-lightmap, each row matched as one brightness factor. The textures are
+before. The view's canvas is cleared to colour 255 (the game's clear
+colour, a hole), and the engine clears its own view at the frame's start.
+What the CPU draws in the view is tracked as up to eight boxes (the 3D
+library's five ways into the 2D drawing, voxels as the whole view); when
+an engine polygon comes over a box, the engine is let finish, the box's
+pixels go onto the engine's frame through the palette and are left as
+holes, and the engine goes on: the painter's order is kept without a
+memset under every span. Where the game copies the view canvas to the
+screen, the rest (later CPU drawing, the overlays, the mouse) goes onto
+the engine's frame in one pass instead, which leaves the canvas all holes,
+so the next frame's clear is left out. The polygon's rows come from the
+engine's EDGE command (a header per edge pair, Shock's pixel rule:
+x + 0xFFFF, the window cl .. cr - 1); the light per vertex (one of the
+shading table's 16 rows) becomes a small lightmap, each row matched as one
+brightness factor. RSD (run-length) bitmaps the view maps are unpacked
+once, a few kept (192 KB). The textures are
 cleaned from the data cache and their colours moved off 224..255 (which
 the engine leaves unlit) when a level's textures are loaded (`textmaps.c`).
 
@@ -46,8 +55,11 @@ full-screen view or at 320 x 200).
 
 Ctrl-K on the terminal cycles the engine: all, walls only (the game's
 vertical wall mapper), floors and the rest, off. Ctrl-D sends the 8 bpp
-screen as the game drew it (with its holes), for debugging. The profile
-build (below) also prints the engine's counters every 5 s.
+screen as the game drew it (with its holes), for debugging. Ctrl-R (tests)
+has the CPU make the rows instead of EDGE; Ctrl-O (tests) turns the
+on-line help off and on without saving it. The profile build (below) also
+prints the engine's counters every 5 s; `EXTRA=-DM20_CHECK` reports CPU
+drawing that wasn't put in a box.
 
 Measured on the board (2026-11-08, level 1's first room, `make
 B=build-prof`):
@@ -58,8 +70,22 @@ B=build-prof`):
 | the span engine | 10.2 |
 | (320 x 200, the CPU) | 11.6 |
 
-What's left is mostly the CPU's: each engine polygon's setup and spans
-(20%), the composing (12%), the game. The engine is under 40% busy, with
+2026-11-14, the same room with the on-line help off (its pick-up render
+costs about 2.5 fps while it's on):
+
+| step | fps |
+|---|---|
+| the span engine, holes under every span | 12.9 |
+| the CPU's drawing composed in boxes, no holes | 13.8 |
+| one pass at the copy to the screen, no clear | 15.7 |
+| RSD bitmaps unpacked once | 16.2 |
+| several boxes, composed only under engine polygons | 16.7 |
+| EDGE, the lightmap stepped in fixed point | 18.1 |
+
+What's left is mostly the CPU's: each engine polygon's setup, the pass at
+the copy to the screen (about 10%: it reads the whole view canvas), the
+boxes (about 6%, half of it waiting for the engine), the game. (On
+2026-11-08:) The engine is under 40% busy, with
 many texel cache misses on the 128 x 128 textures seen at an angle (its
 cache is 2 KB, direct-mapped); giving it the 64 x 64 versions halved the
 misses but gained only 3%. Open: now and then `ResLock: Could not load

@@ -425,7 +425,12 @@ no_stereo1:
 
         // convert RSD bitmap to normal
         if (bm->type == BMT_RSD8) {
+#ifdef M20_ENGINE
+        extern int m20_rsd8_convert(grs_bitmap * sbm, grs_bitmap * dbm);   // (port/m20_engine.c: unpacked once)
+        if (m20_rsd8_convert(bm, &unpack_bm) != GR_UNPACK_RSD8_OK)
+#else
         if (gr_rsd8_convert(bm, &unpack_bm) != GR_UNPACK_RSD8_OK)
+#endif
             return CLIP_ALL;
         else
             bm = &unpack_bm;
@@ -603,6 +608,8 @@ int draw_tmap_common(int n, g3s_phandle *vp, grs_bitmap *bm) {
             if (m20_engine_tmap(bm, _n_verts, p_vlist, zz, light_flag, tmap_func == (void *)&v_umap))
                 return CLIP_NONE;
         }
+        extern void m20_cpu_drew_list(int n, grs_vertex **vpl);
+        m20_cpu_drew_list(_n_verts, p_vpl);   // (the CPU's: the box it draws into)
     }
 #endif
 

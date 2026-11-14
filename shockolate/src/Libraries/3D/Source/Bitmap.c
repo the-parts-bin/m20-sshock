@@ -77,6 +77,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "GlobalV.h"
 #include "lg.h"
 #include "OpenGL.h"
+#ifdef M20_ENGINE   // M20: the box the CPU draws into, for the span engine (port/m20_engine.c)
+extern void m20_cpu_drew(fix x0, fix y0, fix x1, fix y1);
+extern void m20_cpu_drew_list(int n, grs_vertex **vpl);
+#endif
 #include <stdbool.h>
 
 // need this from 2D lib
@@ -393,6 +397,9 @@ grs_vertex **g3_bitmap_common(grs_bitmap *bm, g3s_phandle p) {
 
                     tmap_info.tmap_type = GRC_POLY;
                     if (!use_opengl()) {
+#ifdef M20_ENGINE
+                        m20_cpu_drew_list(4, _g3d_bitmap_poly);
+#endif
                         h_map(bm, 4, _g3d_bitmap_poly, &tmap_info);
                     } else {
                         int opengl_bitmap(grs_bitmap *bm, int n, grs_vertex **vpl, grs_tmap_info *ti);
@@ -406,6 +413,9 @@ grs_vertex **g3_bitmap_common(grs_bitmap *bm, g3s_phandle p) {
     tmap_info.tmap_type = (_g3d_light_flag << 1) + GRC_BILIN;
     extern bool use_opengl();
     if (!use_opengl()) {
+#ifdef M20_ENGINE
+        m20_cpu_drew_list(4, _g3d_bitmap_poly);
+#endif
         h_map(bm, 4, _g3d_bitmap_poly, &tmap_info);
     } else {
         int opengl_bitmap(grs_bitmap *bm, int n, grs_vertex **vpl, grs_tmap_info *ti);
