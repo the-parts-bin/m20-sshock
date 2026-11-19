@@ -234,9 +234,20 @@ void load_textures(void) {
                 }
                 if(can_use_opengl())
                     opengl_cache_wall_texture(c, n, cur_bm);
+#ifdef M9B
+                // M9B: the bits are copied (tmap_static_mem, tmap_dynamic_mem): the
+                // resource can go (upstream kept the level's textures, 1.1 MB at
+                // 640 x 480, in the resource cache for good).
+                if ((n == TEXTURE_128_INDEX) || (n == TEXTURE_64_INDEX))
+                    ResDrop(tmap_ids[n] + i);
+#endif
             }
         }
     }
+#ifdef M9B
+    ResDrop(TEXTURE_32_ID);   // (the 32 and 16 sizes: one compound resource each)
+    ResDrop(TEXTURE_16_ID);
+#endif
 #ifdef M20_ENGINE
     {   // M20: the textures for the span engine (port/m20_engine.c)
         extern void m20_tex_loaded(int slot, uchar *p, uint32_t n, const uint32_t *pal);

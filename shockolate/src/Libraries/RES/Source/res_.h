@@ -95,6 +95,31 @@ void ResGrowResDescTable(Id id);
 
 //	LRU chain link management macros
 
+#ifdef M9B
+// M9B: a resource is in the chain when its next isn't ID_NULL (HEAD and TAIL
+// are 1 and 2), and the macros check that: upstream's call sites remove
+// resources that were never added (ResLock of one just loaded, ResDrop of
+// one not loaded) and add ones already there (ResUnlock of one ResLock found
+// loaded), which spoilt the chain through the stale links. The pager
+// (ResPageOut, resacc.c) doesn't walk the chain, but it is kept sound.
+#define ResRemoveFromLRU(prd)                         \
+    {                                                 \
+        if ((prd)->next != ID_NULL) {                 \
+            gResDesc[(prd)->next].prev = (prd)->prev; \
+            gResDesc[(prd)->prev].next = (prd)->next; \
+            (prd)->next = (prd)->prev = ID_NULL;      \
+        }                                             \
+    }
+
+#define ResAddToTail(prd)                                 \
+    {                                                     \
+        ResRemoveFromLRU(prd);                            \
+        (prd)->prev = gResDesc[ID_TAIL].prev;             \
+        (prd)->next = ID_TAIL;                            \
+        gResDesc[(prd)->prev].next = RESDESC_ID(prd);     \
+        gResDesc[ID_TAIL].prev = RESDESC_ID(prd);         \
+    }
+#else
 #define ResRemoveFromLRU(prd)                     \
     {                                             \
         gResDesc[(prd)->next].prev = (prd)->prev; \
@@ -108,6 +133,8 @@ void ResGrowResDescTable(Id id);
         gResDesc[(prd)->prev].next = RESDESC_ID(prd); \
         gResDesc[ID_TAIL].prev = RESDESC_ID(prd);     \
     }
+
+#endif
 
 #define ResMoveToTail(prd)            \
     {                                 \

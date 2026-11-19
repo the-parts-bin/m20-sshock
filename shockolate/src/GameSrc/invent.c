@@ -2482,7 +2482,14 @@ LGRegion *create_invent_region(LGRegion *root, LGRegion **pbuttons, LGRegion **p
 
         // This background is going to get used by the 360 ware
         // in fullscreen mode, so we need extra bits
+#ifdef M9B
+        // M9B: the macros scale the game's 320 x 200 coordinates to the
+        // largest mode (1024 x 768), so the height is 200's, not the screen's:
+        // at 640 x 480 this took 594 KB instead of 110 KB.
+        inv_backgnd.bits = (uchar *)malloc(MAX_INV_FULL_WD(INV_FULL_WD) * MAX_INV_FULL_HT(200 - GAME_MESSAGE_Y));
+#else
         inv_backgnd.bits = (uchar *)malloc(MAX_INV_FULL_WD(INV_FULL_WD) * MAX_INV_FULL_HT(grd_cap->h - GAME_MESSAGE_Y));
+#endif
         LG_memcpy(inv_backgnd.bits, (f + 1), f->bm.w * f->bm.h);
 	RefUnlock(REF_IMG_bmBlankInventoryPanel);
 

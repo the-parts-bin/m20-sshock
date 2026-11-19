@@ -264,6 +264,8 @@ void ResCloseFile(int32_t filenum); // close res file
 
 #define ResOpenFile(fname) ResOpenResFile(fname, ROM_READ, FALSE)
 #ifdef M9B
+void *ResMalloc(size_t n);                // malloc, paging out unlocked resources if need be (resacc.c)
+extern Id resPagerKeep;                   // the resource being loaded: not to be paged out
 const char *ResFileName(int32_t filenum); // the name a file was opened with
 void *ResReadRaw(Id id, uint32_t off, uint32_t len, void *buf); // bytes of a resource, from its file
 #endif

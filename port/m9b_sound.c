@@ -306,7 +306,7 @@ static uint32_t voc_decode(const uint8_t *voc, int len, int8_t **out, uint32_t *
         }
         if (pass == 0) {
             total = n;
-            if (!n || !(*out = malloc(n))) return 0;
+            if (!n || !(*out = ResMalloc(n))) return 0;   // (paging out resources if need be)
         }
     }
     return total;
@@ -329,13 +329,14 @@ int snd_sample_play(int snd_ref, int len, uchar *smp, struct snd_digi_parms *dpr
     int c;
     for (c = 0; c < SND_MAX_SAMPLES; c++)
         if (!channels[c].data && !owned[c]) break;
-    if (c == SND_MAX_SAMPLES) return ERR_NOEFFECT;
+    // (No sample: SND_PERROR, not ERR_NOEFFECT, which is 6, a channel to the caller.)
+    if (c == SND_MAX_SAMPLES) return SND_PERROR;
     int8_t *data = NULL;
     uint32_t rate = 11025;
     uint32_t n = voc_decode(smp, len, &data, &rate);
     if (!n) {
         free(data);
-        return ERR_NOEFFECT;
+        return SND_PERROR;
     }
     digi_parms_by_channel[c] = *dprm;
     struct channel ch = {0};

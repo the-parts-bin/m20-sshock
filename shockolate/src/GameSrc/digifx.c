@@ -276,7 +276,7 @@ char secret_global_pan = SND_DEF_PAN;
 
 int play_digi_fx_master(int sfx_code, int num_loops, ObjID id, ushort x, ushort y) {
     Id vocRes;
-    int retval, real_code = sfx_code, len;
+    int retval = -3, real_code = sfx_code, len;
     uchar *addr;
     extern uchar sfx_on;
     extern uchar curr_sfx_vol;
@@ -331,6 +331,21 @@ int play_digi_fx_master(int sfx_code, int num_loops, ObjID id, ushort x, ushort 
     s_dprm.flags = 0;
     addr = (uchar *)ResLock(vocRes);
     len = ResSize(vocRes);
+#ifdef M9B
+    // M9B: snd_sample_play() decodes the sample into a copy of its own
+    // (port/m9b_sound.c), so the resource is unlocked at once: upstream left
+    // every effect played locked for good (the SDL mixer's end-of-sample
+    // callback is commented out), which the pager can't page out. A sample
+    // that can't be loaded is left out (upstream: a critical error, which
+    // returns here, and an uninitialized sample id).
+    if (addr == NULL)
+        return -3;
+    retval = snd_sample_play(vocRes, len, addr, &s_dprm);
+    ResUnlock(vocRes);
+    if (retval == SND_PERROR)
+        return -3;
+    return retval;
+#else
     if (addr != NULL) {
         retval = snd_sample_play(vocRes, len, addr, &s_dprm);
     } else
@@ -340,6 +355,7 @@ int play_digi_fx_master(int sfx_code, int num_loops, ObjID id, ushort x, ushort 
         return -3;
     }
     return retval; // which sample id
+#endif
 }
 
 // scan through the whole list

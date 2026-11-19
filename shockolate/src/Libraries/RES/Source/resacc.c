@@ -47,6 +47,59 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // An empty ResourceFormat struct means no translation is needed.
 const ResourceFormat RawFormat = { NULL, NULL, 0, NULL };
 
+#ifdef M9B
+//	---------------------------------------------------------
+//
+//	M9B: the pager. The game came with one (ResInstallPager(ResDefaultPager)
+//	in ResInit), which Shockolate left out: with PC memory, resources stayed
+//	loaded until something dropped them. On the board a level's art, sound
+//	effects and emails filled the heap and then loads failed ("ResLock:
+//	Could not load ..." and a crash). ResMalloc() is malloc for the resource
+//	loaders: when malloc fails it drops unlocked resources, the least
+//	recently used first (the LRU chain from its head, then any others), until
+//	the block fits. Unlocked resources are what the original pager dropped
+//	too ("ptr only guaranteed until next Malloc(), Lock(), Get()").
+//	---------------------------------------------------------
+Id resPagerKeep; // being loaded (its raw data is being decoded, or one of its items read)
+
+static uint32_t res_page_out_one(void) {
+    Id id;
+    for (id = gResDesc[ID_HEAD].next; id != ID_TAIL && id != ID_NULL; id = gResDesc[id].next) {
+        ResDesc *prd = RESDESC(id);
+        if (prd->ptr != NULL && prd->lock == 0 && id != resPagerKeep) {
+            uint32_t n = prd->msize ? prd->msize : prd->fsize;
+            ResDrop(id);
+            return n ? n : 1;
+        }
+    }
+    for (id = ID_MIN; id <= resDescMax; id++) {
+        ResDesc *prd = RESDESC(id);
+        if (prd->ptr != NULL && prd->lock == 0 && id != resPagerKeep) {
+            uint32_t n = prd->msize ? prd->msize : prd->fsize;
+            ResDrop(id);
+            return n ? n : 1;
+        }
+    }
+    return 0;
+}
+
+void *ResMalloc(size_t n) {
+    static unsigned reports;
+    void *p;
+    uint32_t dropped = 0, count = 0, m;
+    while ((p = malloc(n ? n : 1)) == NULL) {
+        if ((m = res_page_out_one()) == 0)
+            break;
+        dropped += m;
+        count++;
+    }
+    if (count && reports++ < 20)
+        INFO("ResMalloc: paged out %u resources (about %u KB) for %u bytes%s", (unsigned)count,
+             (unsigned)(dropped / 1024), (unsigned)n, p ? "" : ", still no room");
+    return p;
+}
+#endif
+
 void *ResDecode(void *raw, size_t *size, UserDecodeData ud)
 {
     // Layout.
@@ -62,7 +115,13 @@ void *ResDecode(void *raw, size_t *size, UserDecodeData ud)
         assert(nentries == 1);
         bufsize += *size - layout->dsize;
     }
+#ifdef M9B
+    void *buff = ResMalloc(bufsize);
+    if (buff == NULL)
+        return NULL;
+#else
     void *buff = malloc(bufsize);
+#endif
     int i;
     for (i = 0; i < nentries; ++i) {
         uchar *b = ((uchar *)buff) + i * layout->msize;
@@ -198,6 +257,10 @@ void *ResLock(Id id) {
 
     // CC: If already loaded, use the existing bytes
     if (prd->ptr != NULL) {
+#ifdef M9B
+        if (prd->lock == 0)
+            ResRemoveFromLRU(prd); // M9B: locked ones aren't in the chain
+#endif
         prd->lock++;
         return prd->ptr;
     }
@@ -342,8 +405,12 @@ void ResDrop(Id id) {
         WARN("%s: Block $%x is locked, dropping anyway", __FUNCTION__, id);
 
     // Remove from LRU chain
+#ifdef M9B
+    ResRemoveFromLRU(prd); // (M9B: the macro checks it's there)
+#else
     if (prd->lock == 0)
         ResRemoveFromLRU(prd);
+#endif
 
     //	Free memory and set ptr to NULL
 

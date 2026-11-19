@@ -101,11 +101,24 @@ void *ResLoadResource(Id id, const ResourceFormat *format) {
 #endif
 
     // Should not be called if resource is already loaded.
+#ifdef M9B
+    // M9B: the pager (ResMalloc) leaves this one alone while it's decoded.
+    Id keep = resPagerKeep;
+    resPagerKeep = id;
+#endif
     if (prd->ptr == NULL) {
 	// Allocate memory, setting magic id so pager can tell who it is if need be.
+#ifdef M9B
+	prd->ptr = ResMalloc(prd->fsize);
+#else
 	prd->ptr = malloc(prd->fsize);
-	if (prd->ptr == NULL)
+#endif
+	if (prd->ptr == NULL) {
+#ifdef M9B
+	    resPagerKeep = keep;
+#endif
 	    return (NULL);
+	}
 	// Load from disk
 	ResRetrieve(id, prd->ptr);
     } else {
@@ -121,6 +134,9 @@ void *ResLoadResource(Id id, const ResourceFormat *format) {
 	prd->ptr = decoded;
     }
     prd->msize = size;
+#ifdef M9B
+    resPagerKeep = keep;
+#endif
 
     // Return ptr
     return (prd->ptr);

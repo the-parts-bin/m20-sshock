@@ -59,8 +59,11 @@ static void *ref_item_from_file(Id id, RefTable *prt, RefIndex index, const Reso
         ResDesc *prd = RESDESC(id);
         FILE *fd = resFile[prd->filenum].fd;
         size_t size = e->size;
-        void *raw = malloc(size ? size : 1);
+        Id keep = resPagerKeep;
+        resPagerKeep = id; // the pager leaves this compound (its ref table) alone
+        void *raw = ResMalloc(size ? size : 1);
         if (raw == NULL || fd == NULL) {
+            resPagerKeep = keep;
             ERROR("%s: can't read ref %x:%x (%u bytes)", __FUNCTION__, id, index, (unsigned)size);
             free(raw);
             return NULL;
@@ -73,7 +76,10 @@ static void *ref_item_from_file(Id id, RefTable *prt, RefIndex index, const Reso
             free(raw);
             raw = decoded;
         }
+        resPagerKeep = keep;
         e->decoded_data = raw;
+        if (raw == NULL)
+            ERROR("%s: no memory for ref %x:%x (%u bytes)", __FUNCTION__, id, index, (unsigned)e->size);
     }
     return e->decoded_data;
 }
@@ -152,8 +158,16 @@ void *RefLock(Ref ref) {
     const UserDecodeData data = format->data;
 
 #ifdef M9B
-    if (prt->raw_data == NULL)
-        return ref_item_from_file(id, prt, index, format);
+    if (prt->raw_data == NULL) {
+        void *item = ref_item_from_file(id, prt, index, format);
+        if (item == NULL) {
+            // M9B: callers don't unlock what they didn't get: the lock is undone
+            // here (it kept the compound from being paged out for good).
+            if (--prd->lock == 0)
+                ResAddToTail(prd);
+        }
+        return item;
+    }
 #endif
     void *raw = ((uint8_t*)(prt->raw_data)) + prt->entries[index].offset;
     if (decoder != NULL) {
@@ -296,7 +310,13 @@ RefTable *ResReadRefTable(Id id) {
 
     fseek(fd, RES_OFFSET_DESC2REAL(prd->offset), SEEK_SET);
     fread(&numRefs, sizeof(RefIndex), 1, fd);
+#ifdef M9B
+    prt = ResMalloc(REFTABLESIZE(numRefs));
+    if (prt == NULL)
+        return NULL;
+#else
     prt = malloc(REFTABLESIZE(numRefs));
+#endif
     prt->numRefs = numRefs;
     prt->raw_data = NULL;
     readRefTableEntries(prt, fd);
@@ -357,12 +377,24 @@ void *ResDecodeRefTable(void *raw, size_t *size, UserDecodeData data) {
     size_t startOffset = sizeof(RefIndex) + (numRefs+1) * sizeof(uint32_t);
     rp += 2;
     // Allocate a directory for it.
+    size_t rawSize = *size - startOffset;
+#ifdef M9B
+    RefTable *prt = ResMalloc(REFTABLESIZE(numRefs));
+    if (prt == NULL)
+        return NULL;
+    prt->raw_data = ResMalloc(rawSize);
+    if (prt->raw_data == NULL) {
+        free(prt);
+        return NULL;
+    }
+    prt->numRefs = numRefs;
+#else
     RefTable *prt = malloc(REFTABLESIZE(numRefs));
     prt->numRefs = numRefs;
     // Copy the raw data out of the original resource (it'll be deleted once
     // decoding is done).
-    size_t rawSize = *size - startOffset;
     prt->raw_data = malloc(rawSize);
+#endif
     memcpy(prt->raw_data, (uint8_t*)raw + startOffset, rawSize);
     offset = (uint32_t)*rp | ((uint32_t)rp[1] << 8) | ((uint32_t)rp[2] << 16) |
 	((uint32_t)rp[3] << 24);

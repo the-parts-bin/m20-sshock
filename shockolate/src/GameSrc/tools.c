@@ -125,16 +125,20 @@ void draw_shadowed_string(char *s, short x, short y, uchar shadow) {
 
 void draw_hires_resource_bm(Ref id, int x, int y) {
     FrameDesc *f = RefLock(id);
-    if (f == NULL)
+    if (f == NULL) {
         critical_error(CRITERR_MEM | 9);
+        return; // M9B: critical_error() returns (CleanupAndExit() is empty): don't draw through NULL
+    }
     gr_bitmap(&f->bm, x, y);
     RefUnlock(id);
 }
 
 void draw_hires_halfsize_bm(Ref id, int x, int y) {
     FrameDesc *f = RefLock(id);
-    if (f == NULL)
+    if (f == NULL) {
         critical_error(CRITERR_MEM | 9);
+        return; // M9B: critical_error() returns (CleanupAndExit() is empty): don't draw through NULL
+    }
     gr_scale_bitmap(&f->bm, x, y, (f->bm.w >> 1), (f->bm.h >> 1));
     RefUnlock(id);
 }
@@ -153,8 +157,10 @@ errtype draw_raw_resource_bm(Ref id, int x, int y) {
     FrameDesc *f;
 
     f = RefLock(id);
-    if (f == NULL)
+    if (f == NULL) {
         critical_error(CRITERR_MEM | 9);
+        return ERR_NOMEM; // M9B: critical_error() returns (CleanupAndExit() is empty): don't draw through NULL
+    }
     ss_bitmap(&f->bm, x, y);
     RefUnlock(id);
     return (OK);
@@ -165,8 +171,10 @@ errtype draw_res_bm_core(Ref id, int x, int y, uchar scale) {
     LGRect mouse_rect;
 
     f = RefLock(id);
-    if (f == NULL)
+    if (f == NULL) {
         critical_error(CRITERR_MEM | 9);
+        return ERR_NOMEM; // M9B: critical_error() returns (CleanupAndExit() is empty): don't draw through NULL
+    }
     mouse_rect.ul.x = x;
     mouse_rect.ul.y = y;
     mouse_rect.lr.x = x + f->bm.w;
@@ -194,8 +202,10 @@ errtype draw_full_res_bm(Ref id, int x, int y, uchar fade_in) {
     byte pal_id;
 
     f = RefLock(id);
-    if (f == NULL)
+    if (f == NULL) {
         critical_error(CRITERR_MEM | 9);
+        return ERR_NOMEM; // M9B: critical_error() returns (CleanupAndExit() is empty): don't draw through NULL
+    }
 
     // Set the palette right, if one is provided....
     if (f->pallOff) {
@@ -238,8 +248,10 @@ int res_bm_width(Ref id) {
     int n;
 
     f = RefLock(id);
-    if (f == NULL)
+    if (f == NULL) {
         critical_error(CRITERR_MEM | 9);
+        return 0; // M9B: critical_error() returns (CleanupAndExit() is empty): don't draw through NULL
+    }
     n = f->bm.w;
     RefUnlock(id);
     return (n);
@@ -250,8 +262,10 @@ int res_bm_height(Ref id) {
     int n;
 
     f = RefLock(id);
-    if (f == NULL)
+    if (f == NULL) {
         critical_error(CRITERR_MEM | 9);
+        return 0; // M9B: critical_error() returns (CleanupAndExit() is empty): don't draw through NULL
+    }
     n = f->bm.h;
     RefUnlock(id);
     return (n);

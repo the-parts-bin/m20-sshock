@@ -29,6 +29,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "MacTune.h"
 #include "afile.h"
+#ifdef M9B
+#include "res.h"   // (ResMalloc)
+#endif
 #include "movie.h"
 #include "audiolog.h"
 #include "map.h"
@@ -127,7 +130,17 @@ errtype audiolog_play(int email_id) {
 
     audiolog_audiobuffer_size = AfileAudioLength(palog);
 #ifdef M9B
-    audiolog_audiobuffer = (uint8_t *)malloc(AUDIO_RING * MOVIE_DEFAULT_BLOCKLEN);
+    // M9B: the 64 KB ring through ResMalloc (unlocked resources paged out if
+    // the heap has no block that big: at 640 x 480 it can be fragmented with
+    // plenty free), and checked: AmovReadAudioBlock wrote through NULL.
+    audiolog_audiobuffer = (uint8_t *)ResMalloc(AUDIO_RING * MOVIE_DEFAULT_BLOCKLEN);
+    if (audiolog_audiobuffer == NULL) {
+        WARN("%s: no memory for the audio log's ring", __FUNCTION__);
+        AfileFree(palog);
+        free(palog);
+        end_wait();
+        return ERR_FREAD;
+    }
     alog_movie = palog;
     alog_blocks = 0;
 #else
