@@ -163,7 +163,7 @@ libstdc++.
 | `tools/put_data.sh` | copies the data from an installed CD version to the card |
 | `tools/make_music.sh` | renders the music to WAV files on a PC (see Music) and optionally copies them to the card |
 | `tools/newgame.sh` | loads a build and starts a new game from the UART (tests) |
-| `tools/host/` | the host test harness: `host.c`, `make_datadir.sh` (The host test harness) |
+| `tools/host/` | the host test harness: `host.c`, its window `window.c`, `make_datadir.sh` (The host test harness) |
 | `../core/runtime/syscalls.c`, `string.c`, `trap.c`, `trap_entry.S` | the runtime all the ports share (in the core): files through FatFs, the UART console, misaligned access emulation, the trap handler and PC-sampling profiler |
 
 ## Building and the SD card
@@ -371,8 +371,9 @@ screens shown 8 bpp), for comparison. Neither changes the board build.
   (`span_emu_stats`: spans, pixels, EDGE commands, lightmaps, and the
   checks: spans of 0 pixels, z buffer layout, stale z cache lines);
   `span_emu:` lines on stderr report each check's first failure. Every 10
-  s it prints the heap's use and the open files (the board has 40). It has
-  no window.
+  s it prints the heap's use and the open files (the board has 40).
+- **Window** (`M20_WINDOW=1`, below): the game played on the PC with its
+  keyboard and mouse, the picture as the board's HDMI output shows it.
 
 ```
 make host                     # build-host/sshock-host (HOST_ENGINE=0: build-host-cpu/)
@@ -417,6 +418,67 @@ m20-system build makes (`/tmp/ng.txt`):
 ```
 make host && build-host/sshock-host ../sdcard/out/card /tmp/ss-out /tmp/ng.txt
 ```
+
+### Playing it in a window
+
+`make host` builds the window in (`tools/host/window.c`) when the 32-bit
+SDL2 is installed (`libsdl2-dev:i386`), found as Quake's Makefile finds it
+(`PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig pkg-config sdl2`);
+`make host HOST_SDL=0` leaves it out (headless only, as before). The make
+line says `SDL 1` or `SDL 0`. Either way the scripted runs are as before
+(the same screenshots and `audio.wav`) and the board build is unchanged.
+
+```
+M20_WINDOW=1 build-host/sshock-host ../sdcard/out/card /tmp/ss-out          # play
+M20_WINDOW=1 build-host/sshock-host ../sdcard/out/card /tmp/ss-out SCRIPT   # a script too
+```
+
+- With `M20_WINDOW=1` the `SCRIPT` is optional (of two arguments, the
+  second is taken for the `SCRIPT` if it's a file, else they're `DATADIR
+  OUTDIR`). A script still runs alongside, on the same clock (its `quit`
+  ends the game: `tools/host/newgame.txt` quits at 70 s).
+- **Picture:** the 1280 x 720 frame the video hardware makes from the line
+  table and palette (as `SSHOCK_SHOT_FULL=1` screenshots: the 640 x 480
+  screen's columns doubled, its rows on 1 or 2 lines each), updated at
+  each vertical blank (60 Hz). The window can be resized (the picture
+  keeps its shape, letterboxed).
+- **Time:** real (the game at its real speed; the frames at most 60 a
+  second), unless `SSHOCK_FRAME_MS` is set.
+- **Keys:** SDL's scancodes are the USB HID usages, so each key goes into
+  the USB keyboard registers as its usage (up to 4 keys held, as the
+  hardware reports them; Ctrl, Shift, Alt and GUI in the modifier byte),
+  pressed and released as on the PC (no auto-repeat, as the USB keyboard),
+  and the port turns them into the game's keys as on the board (Mac key
+  codes, Shift for capitals and symbols, the hotkeys, e.g. `F` mouselook).
+  **F12** saves the picture in
+  `OUTDIR` (`f12-000.ppm`, ... at the game's resolution, 1280 x 720 with
+  `SSHOCK_SHOT_FULL=1`) instead of reaching the game. Losing the focus
+  releases every key and button.
+- **Mouse:** into the USB mouse registers (the motion's running sums and
+  the buttons: left, right, middle), as a USB mouse's reports. The
+  pointer goes where the host's is over the picture: each motion moves
+  the game's pointer by the difference between where it is and the
+  screen pixel under the host pointer (the picture's columns between the
+  video window's edges, its rows over the 720 lines), so it lines up with
+  the window's picture at any size; the host's own pointer is hidden (the
+  game draws its own). While the game's mouselook is on (`F`), the window
+  holds the mouse (SDL's relative mode) and SDL's motion goes in as
+  deltas (in the picture's pixels, whatever the window's size); when it goes off, the host pointer
+  is put where the game's is. A click is made where the pointer was when
+  pressed; a key or button pressed and released between two of the
+  game's polls is held to the next poll, so short taps and double clicks
+  aren't lost.
+- **Sound:** the audio halves, as they go into `audio.wav`, are also played
+  (SDL audio, at most 200 ms queued); `SSHOCK_AUDIO=0` turns that off.
+- Closing the window ends the run as `quit` does (`audio.wav` finished, the
+  heap and `span_emu` report).
+- Script steps for testing the window's input path (window only): `wkey
+  HID`, `wdown HID`, `wup HID`, `wmove X Y` (X, Y in the 1280 x 720
+  picture), `wclick [left|right]`, `wquit`: SDL events pushed into SDL's
+  queue, which then go the way the window's own events do. It runs without
+  a display with `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy` (with
+  `SSHOCK_FRAME_MS=50`, `newgame.txt` with `wkey`/`wdown`/`wup` in place of
+  `key`/`down`/`up` gives the same screenshots as the register steps).
 
 (about a second: `/tmp/ss-out/g1.ppm` ..., `/tmp/ss-out/SSHOCK/prefs.txt`).
 The same script with `build-host-cpu/sshock-host` plays the same game

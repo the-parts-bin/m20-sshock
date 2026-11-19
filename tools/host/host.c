@@ -39,7 +39,16 @@
 // keybinds.txt, CurrentGame.dat, the saves) goes to the save directory,
 // never into the data.
 //
+// Window (M20_WINDOW=1, when built with SDL2: window.c): the picture the
+// video hardware makes (as the screenshots, 1280 x 720) shown at each
+// vertical blank; SDL's keys and mouse go into the same USB registers as
+// the script's (keyboard: the HID usages and modifier byte; mouse: the
+// pointer put where the host's is over the picture, or SDL's deltas while
+// the game's mouselook is on); F12 a screenshot (OUT/f12-NNN.ppm); real
+// time unless $SSHOCK_FRAME_MS is set; the SCRIPT is optional.
+//
 // usage: sshock-host [DATADIR] OUTDIR SCRIPT
+//        M20_WINDOW=1 sshock-host [DATADIR] OUTDIR [SCRIPT]
 //   DATADIR: the card's root (holding SSHOCK/, as ../../sdcard/make_sdcard.sh
 //   builds it in OUT/card) or its SSHOCK/ itself (holding RES/DATA/...), or
 //   a directory tools/host/make_datadir.sh made; without it, $SSHOCK_DATA.
@@ -53,6 +62,10 @@
 //   sound effects N to M, one a frame, as the game would), "MS quit"; MS is
 //   the (virtual) time since start in milliseconds, HID a USB HID usage (hex with 0x,
 //   e.g. 0x28 Enter, 0x29 Esc, 0x52 Up). '#' comments.
+//   With the window, tests of its input path: "MS wkey HID", "MS wdown HID",
+//   "MS wup HID", "MS wmove X Y" (X, Y in the 1280 x 720 picture),
+//   "MS wclick [left|right]", "MS wquit" (the window closed): SDL events pushed into SDL's queue, which
+//   then go the way the window's own events do.
 //   $SSHOCK_SHOT_FULL=1: screenshots 1280 x 720 (else the game's resolution).
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -101,6 +114,8 @@ extern void __real_pump_events(void);
 extern void vblank_flip(void);
 extern void sound_irq(uint32_t pending);
 extern SDL_Surface *drawSurface;
+extern int MouseX, MouseY;                 // m9b_events.c: the game's pointer
+extern int32_t gScreenWide, gScreenHigh;   // m9b_shock.c
 extern char _end[];
 
 // (the harness's own files and memory: the C library's)
@@ -115,6 +130,20 @@ static char *data_dir, *save_dir;
 static FILE *wav;
 static uint32_t wav_bytes;
 static int shot_full;
+static int window;   // M20_WINDOW=1: window.c
+
+#ifdef M20_SDL
+extern int win_open(const char *title, int with_audio);
+extern void win_close(void);
+extern void win_present(const uint32_t *pic);
+extern void win_audio(const void *buf, int bytes);
+extern void win_set_relative(int on, int x, int y);
+extern void win_poll(void);
+extern void win_push_key(int scancode, int down);
+extern void win_push_motion(int x, int y);
+extern void win_push_button(int b, int down);
+extern void win_push_quit(void);
+#endif
 
 static uint64_t now_ns(void) {
     struct timespec ts;
@@ -462,7 +491,7 @@ int __wrap_access(const char *path, int mode) {
 // -------------------------------------------------------------------------
 // Script
 // -------------------------------------------------------------------------
-enum { KEY, DOWN, UP, MOVE, CLICK, SHOT, SCREEN, EMAIL, RES, SFX, QUIT };
+enum { KEY, DOWN, UP, MOVE, CLICK, SHOT, SCREEN, EMAIL, RES, SFX, QUIT, WKEY, WDOWN, WUP, WMOVE, WCLICK, WQUIT };
 static struct step { uint32_t ms; int op, a, b; char name[64]; } *steps;
 static int nsteps, next_step;
 
@@ -491,14 +520,22 @@ static void load_script(const char *path) {
         else if (!strcmp(op, "res")) s->op = RES;
         else if (!strcmp(op, "sfx")) { s->op = SFX; s->a = atoi(a); s->b = *b ? atoi(b) : s->a; }
         else if (!strcmp(op, "quit")) s->op = QUIT;
+        else if (!strcmp(op, "wkey")) { s->op = WKEY; s->a = (int)strtol(a, NULL, 0); }
+        else if (!strcmp(op, "wdown")) { s->op = WDOWN; s->a = (int)strtol(a, NULL, 0); }
+        else if (!strcmp(op, "wup")) { s->op = WUP; s->a = (int)strtol(a, NULL, 0); }
+        else if (!strcmp(op, "wmove")) { s->op = WMOVE; s->a = atoi(a); s->b = atoi(b); }
+        else if (!strcmp(op, "wclick")) { s->op = WCLICK; s->a = !strcmp(a, "right") ? 2 : 1; }
+        else if (!strcmp(op, "wquit")) s->op = WQUIT;
         else { fprintf(stderr, "script: unknown '%s'\n", op); exit(1); }
-        if (s->op == KEY || s->op == CLICK) {   // the release, 100 ms later
+        if (s->op >= WKEY && !window) { fprintf(stderr, "script: '%s' needs the window (M20_WINDOW=1)\n", op); exit(1); }
+        if (s->op == KEY || s->op == CLICK || s->op == WKEY || s->op == WCLICK) {   // the release, 100 ms later
+            int k = s->op == KEY || s->op == WKEY, w = s->op >= WKEY;
             struct step *r = &steps[nsteps++];
             *r = *s;
             r->ms = s->ms + 100u;
-            r->op = s->op == KEY ? UP : CLICK;
-            r->a = s->op == KEY ? s->a : -s->a;
-            s->op = s->op == KEY ? DOWN : CLICK;
+            r->op = k ? (w ? WUP : UP) : (w ? WCLICK : CLICK);
+            r->a = k ? s->a : -s->a;
+            s->op = k ? (w ? WDOWN : DOWN) : (w ? WCLICK : CLICK);
         }
     }
     fclose(f);
@@ -508,11 +545,13 @@ static void load_script(const char *path) {
         }
 }
 
-// Keyboard: up to 4 keys held, as the USB registers report them.
-static uint8_t held[4];
+// Keyboard: up to 4 keys held, as the USB registers report them, and the
+// modifier byte (the window's Ctrl, Shift, Alt, GUI; the script's modifiers
+// are held as keys, 0xE0..0xE7, which the port takes either way).
+static uint8_t held[4], held_mods;
 
 static void report_keys(void) {
-    USB(0, 0x04) = (uint32_t)held[0] << 8 | (uint32_t)held[1] << 16 | (uint32_t)held[2] << 24;
+    USB(0, 0x04) = held_mods | (uint32_t)held[0] << 8 | (uint32_t)held[1] << 16 | (uint32_t)held[2] << 24;
     USB(0, 0x08) = held[3];
     USB(0, 0x00) = 1u | ((USB(0, 0x00) >> 8) + 1u & 0xFFu) << 8;   // keyboard, next report
 }
@@ -592,7 +631,9 @@ static void screen_shot(const char *name) {   // the game's 8 bpp screen, throug
     write_ppm(name, w, h, pic, w);
 }
 
-// Files open now (the board has 40: ../../core/runtime/syscalls.c's MAX_FILES).
+// Files open now (the board has 40: ../../core/runtime/syscalls.c's MAX_FILES),
+// less the window's (SDL's descriptors, as it opened)
+static int fd_window;
 static int open_files(void) {
     DIR *d = opendir("/proc/self/fd");
     int n = 0;
@@ -600,7 +641,7 @@ static int open_files(void) {
     while (d && (e = readdir(d)))
         if (e->d_name[0] != '.') n++;
     if (d) closedir(d);
-    return n - 4;   // stdin, stdout, stderr and the directory itself
+    return n - 4 - fd_window;   // stdin, stdout, stderr and the directory itself
 }
 
 static int files_peak;
@@ -661,6 +702,29 @@ static void report_res(void) {
     printf("  big: %zu KB in all\n", big_all / 1024);
 }
 
+static void finish_wav(void) {   // the sizes in the header
+    if (!wav) return;
+    fseek(wav, 4, SEEK_SET);
+    uint32_t riff = 36u + wav_bytes;
+    fwrite(&riff, 4, 1, wav);
+    fseek(wav, 40, SEEK_SET);
+    fwrite(&wav_bytes, 4, 1, wav);
+    fclose(wav);
+    wav = NULL;
+}
+
+static void host_quit(const char *why) {
+    finish_wav();
+    printf("[host %u ms] %s\n", now_ms(), why);
+#ifdef M20_SDL
+    if (window) win_close();
+    fd_window = 0;   // (SDL's closed)
+#endif
+    exit(0);   // (atexit: report)
+}
+
+static int pushed;   // the script pushed SDL events (WKEY...): poll the window now
+
 static void run_script(void) {
     uint32_t t = now_ms();
     while (next_step < nsteps && steps[next_step].ms <= t) {
@@ -707,26 +771,184 @@ static void run_script(void) {
             break;
         }
         case QUIT:
-            if (wav) {   // the sizes in the header
-                fseek(wav, 4, SEEK_SET);
-                uint32_t riff = 36u + wav_bytes;
-                fwrite(&riff, 4, 1, wav);
-                fseek(wav, 40, SEEK_SET);
-                fwrite(&wav_bytes, 4, 1, wav);
-                fclose(wav);
-                wav = NULL;
-            }
-            printf("[host %u ms] quit\n", now_ms());
-            exit(0);
+            host_quit("quit");
+            break;
+#ifdef M20_SDL
+        case WDOWN:
+        case WUP:
+            win_push_key(s->a, s->op == WDOWN);
+            pushed = 1;
+            break;
+        case WMOVE:
+            win_push_motion(s->a, s->b);
+            pushed = 1;
+            break;
+        case WCLICK:
+            win_push_button(s->a == 2 || s->a == -2 ? 1 : 0, s->a > 0);
+            pushed = 1;
+            break;
+        case WQUIT:
+            win_push_quit();
+            pushed = 1;
+            break;
+#endif
         }
     }
 }
+
+// -------------------------------------------------------------------------
+// The window's input (window.c's host_input), into the USB registers as a
+// USB keyboard (port 0) and mouse (port 1) would report it. The port reads
+// the registers once a game loop (usb_poll), so a key or button pressed and
+// released between two reads would be lost: each poll takes the events in
+// order up to the second change of a key or button (or a motion after a
+// button change, so a click is where it was made), the rest at the next.
+// -------------------------------------------------------------------------
+enum { IN_KEY, IN_MOTION, IN_BUTTON, IN_SHOT, IN_QUIT, IN_RELEASE_ALL };
+#define INQ 512
+static struct inev { uint8_t type, a, b; int16_t x, y, dx, dy; } inq[INQ];
+static int inq_n, want_quit, want_shot;
+
+void host_input(int type, int a, int b, int x, int y, int dx, int dy) {
+    if (type == IN_QUIT) { want_quit = 1; return; }
+    if (type == IN_SHOT) { want_shot++; return; }
+    if (inq_n == INQ) return;   // (the game has stopped reading)
+    inq[inq_n++] = (struct inev){(uint8_t)type, (uint8_t)a, (uint8_t)b, (int16_t)x, (int16_t)y, (int16_t)dx, (int16_t)dy};
+}
+
+// The picture's coordinates (1280 x 720) to the game's screen and back:
+// its columns between the video window's edges, its rows on all 720 lines
+// (as screenshot() takes them).
+static void pic_to_game(int px, int py, int *gx, int *gy) {
+    uint32_t hw = VIDEO_HWIN, l = hw & 0xFFFFu, r = hw >> 16;
+    int w = gScreenWide, h = gScreenHigh;
+    if (r <= l || r > 1280u) l = 0, r = 1280u;
+    int x = px < (int)l ? 0 : (int)(((uint32_t)px - l) * (uint32_t)w / (r - l));
+    int y = py < 0 ? 0 : (int)((uint32_t)py * (uint32_t)h / 720u);
+    *gx = x > w - 1 ? w - 1 : x;
+    *gy = y > h - 1 ? h - 1 : y;
+}
+
+static void game_to_pic(int gx, int gy, int *px, int *py) {
+    uint32_t hw = VIDEO_HWIN, l = hw & 0xFFFFu, r = hw >> 16;
+    int w = gScreenWide > 0 ? gScreenWide : 1, h = gScreenHigh > 0 ? gScreenHigh : 1;
+    if (r <= l || r > 1280u) l = 0, r = 1280u;
+    *px = (int)l + (int)(((uint32_t)gx * 2u + 1u) * (r - l) / (2u * (uint32_t)w));
+    *py = (int)(((uint32_t)gy * 2u + 1u) * 720u / (2u * (uint32_t)h));
+}
+
+// The game's mouselook on: the motion as deltas (the port's relative mode
+// alone isn't it: the port turns it on again at the first motion after
+// mouselook goes off, as sdl_events.c did)
+static int game_relative(void) {
+    extern int mlook_enabled;   // mouselook.c
+    return mlook_enabled && SDL_GetRelativeMouseMode();
+}
+
+static void key_change(int hid, int down) {
+    if (hid >= 0xE0 && hid <= 0xE7) {
+        uint8_t bit = (uint8_t)(1u << (hid - 0xE0));
+        held_mods = down ? held_mods | bit : held_mods & (uint8_t)~bit;
+        return;
+    }
+    for (int i = 0; i < 4; i++)
+        if (held[i] == hid) { if (!down) held[i] = 0; return; }
+    if (down)   // (a fifth key isn't reported)
+        for (int i = 0; i < 4; i++) if (!held[i]) { held[i] = (uint8_t)hid; return; }
+}
+
+static void apply_input(void) {
+    uint8_t kchg[32] = {0}, bchg = 0;
+    int keys = 0, abs_x = -1, abs_y = -1, dx = 0, dy = 0, i;
+    int rel = game_relative();
+    for (i = 0; i < inq_n; i++) {
+        struct inev *e = &inq[i];
+        if (e->type == IN_KEY) {
+            if (kchg[e->a >> 3] & 1u << (e->a & 7u)) break;
+            kchg[e->a >> 3] |= (uint8_t)(1u << (e->a & 7u));
+            key_change(e->a, e->b);
+            keys = 1;
+        } else if (e->type == IN_BUTTON) {
+            if (bchg & 1u << e->a) break;
+            bchg |= (uint8_t)(1u << e->a);
+            if (!rel) abs_x = e->x, abs_y = e->y;
+            if (e->b) USB(1, 0x0C) |= 1u << e->a;
+            else USB(1, 0x0C) &= ~(1u << e->a);
+        } else if (e->type == IN_MOTION) {
+            if (bchg) break;
+            if (rel) dx += e->dx, dy += e->dy;
+            else abs_x = e->x, abs_y = e->y;
+        } else if (e->type == IN_RELEASE_ALL) {   // (the window lost the focus)
+            if (keys || bchg) break;
+            memset(held, 0, sizeof(held));
+            held_mods = 0;
+            keys = 1;
+            USB(1, 0x0C) &= ~7u;
+        }
+    }
+    memmove(inq, inq + i, sizeof(inq[0]) * (size_t)(inq_n - i));
+    inq_n -= i;
+    if (abs_x >= 0 || abs_y >= 0) {   // the pointer to where the host's is
+        int gx, gy;
+        pic_to_game(abs_x, abs_y, &gx, &gy);
+        dx += gx - MouseX;
+        dy += gy - MouseY;
+    }
+    if (dx || dy) {
+        uint32_t pos = USB(1, 0x14);
+        uint16_t x = (uint16_t)(pos + (uint32_t)dx), y = (uint16_t)((pos >> 16) + (uint32_t)dy);
+        USB(1, 0x14) = (uint32_t)y << 16 | x;
+    }
+    if (keys) report_keys();
+}
+
+#ifdef M20_SDL
+static void window_events(int poll) {
+    static int rel;
+    int r = game_relative();
+    if (r != rel) {   // the game's mouselook on or off
+        rel = r;
+        int px, py;
+        game_to_pic(MouseX, MouseY, &px, &py);
+        win_set_relative(rel, px, py);
+        printf("[host %u ms] mouselook %s\n", now_ms(), rel ? "on: the mouse's motion as deltas" : "off: the pointer where the host's is");
+    }
+    if (poll || pushed) win_poll();
+    pushed = 0;
+    apply_input();
+    while (want_shot) {
+        static int n;
+        char name[32];
+        snprintf(name, sizeof(name), "f12-%03d", n++);
+        screenshot(name);
+        want_shot--;
+    }
+    if (want_quit) host_quit("window closed");
+}
+#endif
 
 // -------------------------------------------------------------------------
 // The hardware's events, from the game's loop
 // -------------------------------------------------------------------------
 void __wrap_pump_events(void) {
     static uint32_t vb_last, au_last_us, mem_last;
+#ifdef M20_SDL
+    if (window && !frame_ms) {   // the window in real time: at most 60 frames a second (the rest would only heat the PC)
+        extern uint32_t m9b_frames;
+        static uint32_t frames_seen;
+        static uint64_t frame_ns;
+        if (m9b_frames != frames_seen) {
+            frames_seen = m9b_frames;
+            uint64_t t = now_ns(), next = frame_ns + 16666667u;
+            if (t < next) {
+                struct timespec ts = {0, (long)(next - t)};
+                nanosleep(&ts, NULL);
+                t = next;
+            }
+            frame_ns = t;
+        }
+    }
+#endif
     if (frame_ms) {   // virtual time: a frame drawn since the last call takes at least frame_ms
         extern uint32_t m9b_frames;
         static uint32_t frames_seen;
@@ -739,9 +961,19 @@ void __wrap_pump_events(void) {
         }
     }
     uint32_t t = now_ms();
+    int vb = 0;
     if (t - vb_last >= 17u) {
         vb_last = t;
         vblank_flip();
+        vb = 1;
+#ifdef M20_SDL
+        if (window) {   // the frame shown, as the HDMI output would show it
+            static uint32_t *pic;
+            if (!pic) pic = __real_malloc(4u * 1280u * 720u);
+            picture(pic);
+            win_present(pic);
+        }
+#endif
     }
     uint32_t us = (uint32_t)host_us();
     static int half;
@@ -751,6 +983,9 @@ void __wrap_pump_events(void) {
         sound_irq(half ? 4u : 2u);
         const uint32_t *buf = (const uint32_t *)(uintptr_t)(AUDIO_PTR(half) + PSRAM_BASE);
         if (wav) { fwrite(buf, 4, 256, wav); wav_bytes += 1024u; }
+#ifdef M20_SDL
+        if (window) win_audio(buf, 1024);
+#endif
         half ^= 1;
     }
     static uint32_t files_last;
@@ -764,6 +999,10 @@ void __wrap_pump_events(void) {
         report_memory();
     }
     run_script();
+#ifdef M20_SDL
+    if (window) window_events(vb);
+#endif
+    (void)vb;
     __real_pump_events();
 }
 
@@ -777,25 +1016,36 @@ static char *find_data(const char *dir) {
 
 extern int __real_main(int argc, char **argv);
 int __wrap_main(int argc, char **argv) {
-    if (argc != 3 && argc != 4) {
-        fprintf(stderr, "usage: %s [DATADIR] OUTDIR SCRIPT  (DATADIR: the card's root or its SSHOCK/; default $SSHOCK_DATA)\n",
-                argv[0]);
+    window = getenv("M20_WINDOW") && atoi(getenv("M20_WINDOW"));
+    // With the window the SCRIPT is optional: of two arguments, the second
+    // is the SCRIPT if it's a file (OUTDIR SCRIPT), else DATADIR OUTDIR.
+    struct stat st;
+    int have_script = !window || argc == 4 || (argc == 3 && stat(argv[2], &st) == 0 && S_ISREG(st.st_mode));
+    int nfixed = have_script ? 2 : 1;   // OUTDIR [SCRIPT]
+    if (argc - 1 != nfixed && argc - 1 != nfixed + 1) {
+        fprintf(stderr, "usage: %s [DATADIR] OUTDIR SCRIPT  (DATADIR: the card's root or its SSHOCK/; default $SSHOCK_DATA)\n"
+                        "       M20_WINDOW=1 %s [DATADIR] OUTDIR [SCRIPT]  (a window)\n",
+                argv[0], argv[0]);
         return 1;
     }
+#ifndef M20_SDL
+    if (window) { fprintf(stderr, "host: built without SDL2: no window (make host with SDL2's i386 development files)\n"); return 1; }
+#endif
     setvbuf(stdout, NULL, _IOLBF, 0);
     if ((uintptr_t)arena < SDRAM_BASE || (uintptr_t)_end > SDRAM_END) {
         fprintf(stderr, "host: the image and heap (0x%x..%p) don't fit the SDRAM window 0x800000..0xFFFFFF\n",
                 SDRAM_BASE, (void *)_end);
         return 1;
     }
-    const char *data_arg = argc == 4 ? argv[1] : getenv("SSHOCK_DATA");
-    const char *out_arg = argv[argc - 2], *script = argv[argc - 1];
+    const char *data_arg = argc - 1 > nfixed ? argv[1] : getenv("SSHOCK_DATA");
+    const char *out_arg = argv[argc - nfixed], *script = have_script ? argv[argc - 1] : NULL;
     if (!data_arg) { fprintf(stderr, "host: no DATADIR and no $SSHOCK_DATA\n"); return 1; }
     data_dir = find_data(data_arg);
     if (!data_dir) { fprintf(stderr, "host: %s holds neither res/ nor SSHOCK/res/\n", data_arg); return 1; }
     const char *cap = getenv("M9B_HEAP_KB");
     if (cap && (size_t)atoi(cap) * 1024u < heap_cap) heap_cap = (size_t)atoi(cap) * 1024u;
     if (getenv("SSHOCK_SHOT_FULL")) shot_full = atoi(getenv("SSHOCK_SHOT_FULL"));
+    if (window) frame_ms = 0;   // the window: real time (unless SSHOCK_FRAME_MS)
     if (getenv("SSHOCK_FRAME_MS")) frame_ms = (uint32_t)atoi(getenv("SSHOCK_FRAME_MS"));
     mkdir(out_arg, 0777);
     out_dir = realpath(out_arg, NULL);
@@ -811,7 +1061,7 @@ int __wrap_main(int argc, char **argv) {
            (unsigned)((SDRAM_END - (uintptr_t)_end) >> 10));
     printf("[host] data %s, saves %s, output %s; time %s", data_dir, save_dir, out_dir, frame_ms ? "virtual" : "real\n");
     if (frame_ms) printf(", %u ms a frame at least\n", frame_ms);
-    load_script(script);
+    if (script) load_script(script);
     char path[1200];
     snprintf(path, sizeof(path), "%s/audio.wav", out_dir);
     wav = __real_fopen(path, "wb");
@@ -826,6 +1076,15 @@ int __wrap_main(int argc, char **argv) {
     span_emu_init((void *)(uintptr_t)SDRAM_BASE);
 #endif
     atexit(report);
+#ifdef M20_SDL
+    if (window) {
+        const char *a = getenv("SSHOCK_AUDIO");
+        int fd0 = open_files();
+        if (win_open("System Shock (m20 host)", !a || atoi(a))) return 1;
+        fd_window = open_files() - fd0;
+        printf("[host] window 1280 x 720 (F12: a screenshot in %s)\n", out_dir);
+    }
+#endif
     USB(0, 0x00) = 1u;   // a keyboard on port 0
     USB(1, 0x00) = 2u;   // a mouse on port 1
     return __real_main(1, argv);

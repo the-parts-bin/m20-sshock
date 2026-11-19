@@ -5,7 +5,8 @@
 #
 # `make host` builds tools/host's test harness instead: the same game and
 # port code for 32-bit x86 Linux (gcc-multilib, g++-multilib), the span
-# engine emulated (HOST_ENGINE=0: without it).
+# engine emulated (HOST_ENGINE=0: without it), with a window to play it in
+# when the 32-bit SDL2 is installed (HOST_SDL=0: without).
 
 CROSS   ?= riscv64-unknown-elf-
 CC      := $(CROSS)gcc
@@ -175,6 +176,17 @@ M20_HEAP ?= $(if $(wildcard $(BOARD_ELF)),$(shell printf '0x%x' $$(( 0xFE0000 - 
 HOST_C_SRC := $(GAME_SRC) $(LIB_C:%=$(L)/%.c) $(PORT_SRC) $(HOST_EMU) tools/host/host.c
 hobj = $(HB)/$(subst ../,_/,$(basename $(1))).o
 HOST_OBJ := $(foreach f,$(HOST_C_SRC) $(CXX_SRC),$(call hobj,$(f)))
+# The window (M20_WINDOW=1: tools/host/window.c) when the 32-bit SDL2 is
+# there (libsdl2-dev:i386), as ../quake/Makefile finds it; HOST_SDL=0
+# without it (headless only). window.c is built with SDL2's headers, not
+# the port's stand-in.
+SDL_PC := PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig pkg-config
+HOST_SDL ?= $(if $(shell $(SDL_PC) --exists sdl2 && echo y),1,0)
+HOST_LIBS :=
+ifeq ($(HOST_SDL),1)
+HOST_OBJ += $(HB)/tools/host/window.o
+HOST_LIBS += $(shell $(SDL_PC) --libs sdl2) -ldl
+endif
 HOST_CFLAGS := -m32 -msse2 -mfpmath=sse -O1 -g -fno-pie -fno-asynchronous-unwind-tables $(GAMEFLAGS) -DM9B $(HOST_DEFS) -DM20_HEAP=$(M20_HEAP)u $(INCLUDES) $(WARN) $(CWARN) -std=gnu11
 HOST_CXXFLAGS := -m32 -msse2 -mfpmath=sse -O1 -g -fno-pie -fno-asynchronous-unwind-tables -fno-exceptions $(GAMEFLAGS) $(INCLUDES) $(WARN) -std=gnu++11
 
@@ -192,6 +204,12 @@ endef
 $(foreach f,$(HOST_C_SRC),$(eval $(call host_c_rule,$(f))))
 $(foreach f,$(CXX_SRC),$(eval $(call host_cxx_rule,$(f))))
 $(foreach f,$(GAME_SRC) $(PORT_SRC),$(call hobj,$(f))): HOST_CFLAGS += -include precompiled.h
+ifeq ($(HOST_SDL),1)
+$(call hobj,tools/host/host.c): HOST_CFLAGS += -DM20_SDL
+$(HB)/tools/host/window.o: tools/host/window.c Makefile
+	@mkdir -p $(@D)
+	gcc -m32 -O1 -g -fno-pie -Wall $(shell $(SDL_PC) --cflags sdl2) -MMD -MP -c $< -o $@
+endif
 
 comma := ,
 HOST_WRAP := main pump_events malloc calloc realloc aligned_alloc free strdup open fopen unlink remove rename access
@@ -199,8 +217,8 @@ HOST_WRAP := main pump_events malloc calloc realloc aligned_alloc free strdup op
 host: $(HB)/sshock-host
 
 $(HB)/sshock-host: $(HOST_OBJ)
-	g++ -m32 -no-pie -Wl,-Ttext-segment=0x800000 $(HOST_OBJ) $(addprefix -Wl$(comma)--wrap=,$(HOST_WRAP)) -lpthread -lm -o $@
-	@echo "$@: heap $(M20_HEAP) (the board's), engine $(HOST_ENGINE)"; size $@
+	g++ -m32 -no-pie -Wl,-Ttext-segment=0x800000 $(HOST_OBJ) $(addprefix -Wl$(comma)--wrap=,$(HOST_WRAP)) $(HOST_LIBS) -lpthread -lm -o $@
+	@echo "$@: heap $(M20_HEAP) (the board's), engine $(HOST_ENGINE), SDL $(HOST_SDL)"; size $@
 
 -include $(OBJ:.o=.d) $(HOST_OBJ:.o=.d)
 
