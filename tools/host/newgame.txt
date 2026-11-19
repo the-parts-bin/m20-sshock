@@ -1,0 +1,25 @@
+# a new game at 640 x 480, a few moves and turns
+15000 key 0x29
+25000 key 0x29
+30000 key 0x51
+31000 key 0x28
+33000 key 0x10
+34000 key 0x28
+44000 shot g0
+44500 screen g0_screen
+50000 key 0x2c
+52000 shot g1
+53000 down 0x1A
+54500 up 0x1A
+56000 shot g2
+57000 down 0x04
+57600 up 0x04
+59000 shot g3
+60000 down 0x07
+61200 up 0x07
+63000 shot g4
+64000 down 0x16
+65000 up 0x16
+67000 shot g5
+68000 res
+70000 quit

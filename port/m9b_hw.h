@@ -6,9 +6,15 @@
 
 #include <stdint.h>
 #include "m9b_map.h"
+#include "m20_hw.h"   // the span engine's registers, CBO_*, PREFETCH_R64 (m9b_shock.c)
 
 #include "clock.h"   // CLOCK_HZ, CLOCK_PER_MS: ../../core/firmware
+#ifdef __riscv
 #define CLOCK_CNT    (*(volatile uint32_t*)(M9B_TIMING + 0xCu))   // CLOCK_HZ
+#else
+uint32_t m20_host_clock(void);   // tools/host/host.c: real or virtual time
+#define CLOCK_CNT    m20_host_clock()
+#endif
 #define PSRAM_BASE   M9B_PSRAM_BASE
 
 // Masks interrupts; returns what irq_restore() needs.

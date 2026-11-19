@@ -4,6 +4,9 @@
 // everything else into the game's 8 bpp canvases as before (as Descent's
 // port/m20_engine.c, which explains the scheme).
 //
+// In the host test harness (tools/host/host.c) the register writes go to the
+// engine's C model instead (m20_hw.h), so it draws as the board would.
+//
 // Sharing the frame: under each engine span the 3D view's canvas gets holes
 // (M20_HOLE), which the view's copy to the screen keeps (a plain copy), and
 // SDLDraw() writes the screen's other pixels over the engine's, through the
@@ -30,10 +33,9 @@
 
 #include "2d.h"
 #include "m20_engine.h"
+#include "m20_hw.h"   // SPAN_W, SPAN_R, SDRAM_OFF, CBO_*: the board's, or the host harness's
 
-#define SPAN_HW      ((volatile uint32_t *)0x490000u)
 #define SPAN_BUSY    (1u << 31)
-#define SDRAM_OFF(p) ((uint32_t)(uintptr_t)(p) - 0x800000u)
 #define LIT_A        (1u << 30)
 #define LIT_B        (2u << 30)
 #define CLOCK_CNT    (*(volatile uint32_t *)0x44000Cu)
@@ -79,13 +81,13 @@ static int rows_ready;
 
 static void cache_clean(const void *p, uint32_t n) {
     for (uintptr_t a = (uintptr_t)p & ~(uintptr_t)63; a < (uintptr_t)p + n; a += 64u)
-        asm volatile("cbo.clean (%0)" :: "r"(a) : "memory");
+        CBO_CLEAN(a);
 }
 
 void m20_engine_wait(void) {
     if (!hw_queued) return;
     uint32_t t = CLOCK_CNT;
-    while (SPAN_HW[20] & SPAN_BUSY) {}
+    while (SPAN_R(20) & SPAN_BUSY) {}
     m20_engine_wait_cycles += CLOCK_CNT - t;
     hw_queued = 0;
 }
@@ -109,8 +111,8 @@ void m20_tex_loaded(int slot, uint8_t *p, uint32_t n, const uint32_t *pal) {
     for (uint32_t i = 0; i < n; i++) p[i] = remap[p[i]];
     cache_clean(p, n);
     m20_engine_wait();
-    SPAN_HW[0] = LIT_B;                  // a new texture base with lighting off:
-    SPAN_HW[1] = SDRAM_OFF(p);           // the engine's texel cache emptied
+    SPAN_W(0, LIT_B);                   // a new texture base with lighting off:
+    SPAN_W(1, SDRAM_OFF(p));            // the engine's texel cache emptied
     tex_lo[slot] = p;
     tex_hi[slot] = p + n;
     rows_ready = 0;
@@ -205,15 +207,15 @@ int m20_engine_begin(void) {
         const uint32_t *pal = m20_video_pal888(&gen);
         if (gen != cur_pal_gen) {
             m20_engine_wait();
-            SPAN_HW[24] = 0;
-            for (int k = 0; k < 256; k++) SPAN_HW[25] = pal[k];
+            SPAN_W(24, 0);
+            for (int k = 0; k < 256; k++) SPAN_W(25, pal[k]);
             cur_pal_gen = gen;   // (the light rows stay as fitted at the level's load: the palette's cycling doesn't move them)
         }
         if (!rows_ready) make_rows(pal);
-        SPAN_HW[16] = SDRAM_OFF(target);
-        SPAN_HW[17] = target_stride;
-        SPAN_HW[18] = SDRAM_OFF(zdummy);
-        SPAN_HW[19] = 0;
+        SPAN_W(16, SDRAM_OFF(target));
+        SPAN_W(17, target_stride);
+        SPAN_W(18, SDRAM_OFF(zdummy));
+        SPAN_W(19, 0);
     } else if (cv->bm.bits != cv_bits) return 0;
     cv_bits = cv->bm.bits;
     cv_row = cv->bm.row;
@@ -225,14 +227,14 @@ int m20_engine_begin(void) {
         cache_clean(clear_tex, sizeof(clear_tex));
     }
     // the clear: unlit 8 x 8 texels, one span a row (the depth 0.5, the texels clamped)
-    SPAN_HW[0] = LIT_B;
-    SPAN_HW[0] = LIT_A | 3u << 22 | 3u << 18;
-    SPAN_HW[1] = SDRAM_OFF(clear_tex);
-    for (int r = 2; r <= 15; r++) SPAN_HW[r] = 0;
-    SPAN_HW[9] = 0x40000000u;
-    SPAN_HW[14] = 7u << 16 | 0xFFFFu;
-    SPAN_HW[15] = 7u << 16 | 0xFFFFu;
-    for (int y = 0; y < cv_h; y++) SPAN_HW[0] = (uint32_t)cv_w << 19 | (uint32_t)y << 10;
+    SPAN_W(0, LIT_B);
+    SPAN_W(0, LIT_A | 3u << 22 | 3u << 18);
+    SPAN_W(1, SDRAM_OFF(clear_tex));
+    for (int r = 2; r <= 15; r++) SPAN_W(r, 0);
+    SPAN_W(9, 0x40000000u);
+    SPAN_W(14, 7u << 16 | 0xFFFFu);
+    SPAN_W(15, 7u << 16 | 0xFFFFu);
+    for (int y = 0; y < cv_h; y++) SPAN_W(0, (uint32_t)cv_w << 19 | (uint32_t)y << 10);
     hw_queued = 1;
     return 1;
 }
@@ -357,7 +359,7 @@ static void compose_box(int x0, int y0, int x1, int y1, const uint16_t *pal) {
         }
         if (any)   // (out of the data cache before the engine writes there again)
             for (uintptr_t a = (uintptr_t)(d + x0) & ~(uintptr_t)63; a < (uintptr_t)(d + x1); a += 64u)
-                asm volatile("cbo.flush (%0)" :: "r"(a) : "memory");
+                CBO_FLUSH(a);
     }
     m20_flush_px += px;
 }
@@ -530,24 +532,24 @@ static int engine_tmap(grs_bitmap *bm, int n, grs_vertex *vl, const fix *z, int 
 
     // the canvas's (0, 0) is the target's (the view canvas is copied to the screen there)
     uint32_t wl = (uint32_t)wlog, hl = (uint32_t)hlog, wm = (1u << wl) - 1u, hm = (1u << hl) - 1u;
-    SPAN_HW[0] = LIT_B | 1u << 27 | (uint32_t)lh << 22 | (uint32_t)lw << 17 | SDRAM_OFF(lm) >> 6;
-    SPAN_HW[0] = LIT_A | (uint32_t)k << 26 | hl << 22 | wl << 18 |
-                 ((uint32_t)(int)v0 & hm) << 9 | ((uint32_t)(int)u0 & wm);
-    SPAN_HW[1] = SDRAM_OFF(bits);
-    SPAN_HW[2] = (uint32_t)es << 12 | (uint32_t)et << 18;
-    SPAN_HW[3] = (uint32_t)s0;
-    SPAN_HW[4] = (uint32_t)su;
-    SPAN_HW[5] = (uint32_t)sv;
-    SPAN_HW[6] = (uint32_t)t0;
-    SPAN_HW[7] = (uint32_t)tu;
-    SPAN_HW[8] = (uint32_t)tv;
-    SPAN_HW[9] = (uint32_t)z0;
-    SPAN_HW[10] = (uint32_t)zu;
-    SPAN_HW[11] = (uint32_t)zv;
-    SPAN_HW[12] = 0;
-    SPAN_HW[13] = 0;
-    SPAN_HW[14] = (uint32_t)(((ext_s - 1) << 16) | 0xFFFF);
-    SPAN_HW[15] = (uint32_t)(((ext_t - 1) << 16) | 0xFFFF);
+    SPAN_W(0, LIT_B | 1u << 27 | (uint32_t)lh << 22 | (uint32_t)lw << 17 | SDRAM_OFF(lm) >> 6);
+    SPAN_W(0, LIT_A | (uint32_t)k << 26 | hl << 22 | wl << 18 |
+              ((uint32_t)(int)v0 & hm) << 9 | ((uint32_t)(int)u0 & wm));
+    SPAN_W(1, SDRAM_OFF(bits));
+    SPAN_W(2, (uint32_t)es << 12 | (uint32_t)et << 18);
+    SPAN_W(3, (uint32_t)s0);
+    SPAN_W(4, (uint32_t)su);
+    SPAN_W(5, (uint32_t)sv);
+    SPAN_W(6, (uint32_t)t0);
+    SPAN_W(7, (uint32_t)tu);
+    SPAN_W(8, (uint32_t)tv);
+    SPAN_W(9, (uint32_t)z0);
+    SPAN_W(10, (uint32_t)zu);
+    SPAN_W(11, (uint32_t)zv);
+    SPAN_W(12, 0);
+    SPAN_W(13, 0);
+    SPAN_W(14, (uint32_t)(((ext_s - 1) << 16) | 0xFFFF));
+    SPAN_W(15, (uint32_t)(((ext_t - 1) << 16) | 0xFFFF));
     {   // what the CPU drew before this polygon, if under it (else it waits: the send composes it)
         float px0 = X[0], px1 = X[0], py0 = Y[0], py1 = Y[0];
         for (int i = 1; i < n; i++) {
@@ -597,7 +599,7 @@ static int engine_tmap(grs_bitmap *bm, int n, grs_vertex *vl, const fix *z, int 
         if (x1 > cr) x1 = cr;
         int cnt = x1 - x0;
         if (cnt <= 0) continue;
-        SPAN_HW[0] = (uint32_t)cnt << 19 | (uint32_t)y << 10 | (uint32_t)x0;
+        SPAN_W(0, (uint32_t)cnt << 19 | (uint32_t)y << 10 | (uint32_t)x0);
         m20_engine_spans++;
     }
     else
@@ -615,16 +617,16 @@ static int engine_tmap(grs_bitmap *bm, int n, grs_vertex *vl, const fix *z, int 
         int yend = ch[0].yend < ch[1].yend ? ch[0].yend : ch[1].yend;
         if (yend > ybot) yend = ybot;
         uint32_t fc = cl != eng_cl || cr - 1 != eng_cr;
-        SPAN_HW[0] = 3u << 30 | f[0] << 29 | f[1] << 28 | fc << 27 | (uint32_t)y << 9 | (uint32_t)yend;
+        SPAN_W(0, 3u << 30 | f[0] << 29 | f[1] << 28 | fc << 27 | (uint32_t)y << 9 | (uint32_t)yend);
         if (fc) {
-            SPAN_HW[0] = (uint32_t)(cr - 1) << 16 | (uint32_t)cl;
+            SPAN_W(0, (uint32_t)(cr - 1) << 16 | (uint32_t)cl);
             eng_cl = cl;
             eng_cr = cr - 1;
         }
         for (int c = 0; c < 2; c++)
             if (f[c]) {
-                SPAN_HW[0] = (uint32_t)(ch[c].x + 0xFFFF);
-                SPAN_HW[0] = (uint32_t)ch[c].dx;
+                SPAN_W(0, (uint32_t)(ch[c].x + 0xFFFF));
+                SPAN_W(0, (uint32_t)ch[c].dx);
             }
         ch[0].x += ch[0].dx * (yend - y);
         ch[1].x += ch[1].dx * (yend - y);

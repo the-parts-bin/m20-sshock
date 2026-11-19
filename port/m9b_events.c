@@ -252,12 +252,12 @@ static void poll_uart(void) {
             static const char *const what[4] = {"off", "on", "on for the walls", "on for floors and the rest"};
             printf("span engine %s\n", what[m20_engine_enable]);
         }
-#endif
         else if (c == 0x12u) {   // Ctrl-R (tests): the span engine's rows from the CPU or the EDGE command
             extern int m20_engine_rows;
             m20_engine_rows = !m20_engine_rows;
             printf("span engine rows: %s\n", m20_engine_rows ? "the CPU's" : "EDGE");
         }
+#endif
         else if (c == 0x0Fu) {   // Ctrl-O (tests): the on-line help off and on, not saved in the prefs
             extern uchar olh_active;
             olh_active = !olh_active;

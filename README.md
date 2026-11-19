@@ -88,17 +88,17 @@ boxes (about 6%, half of it waiting for the engine), the game. (On
 2026-11-08:) The engine is under 40% busy, with
 many texel cache misses on the 128 x 128 textures seen at an angle (its
 cache is 2 KB, direct-mapped); giving it the 64 x 64 versions halved the
-misses but gained only 3%. Open: now and then `ResLock: Could not load
-112` (not seen without the engine's buffers, which take 93 KB more than
-the 8 bpp ones did).
+misses but gained only 3%. The `ResLock: Could not load 112` seen now and
+then (and the crash after an audio log, 2026-11-19) was the heap running
+out: see Memory.
 
 **Status:** it plays on the m20 board at 640 x 480 with the span engine
 (above), with sound effects and the music (the themes' sequences,
 pre-rendered: Music). (On the m9b it played at about 7.4 fps in a saved
 game, 320 x 200 on the CPU.) In the host test harness (`tools/host/`, the same
-game and port code on 32-bit x86 Linux, held to the board's heap) it
-plays too: the splash screens, the intro, the menus, a new game, walking
-around level 1, sound effects, saving.
+game and port code on 32-bit x86 Linux, the span engine emulated, held to
+the board's heap) it plays too: the splash screens, the intro, the menus,
+a new game, walking around level 1, sound effects, saving.
 
 Start it from the boot screen's browser (`SSHOCK.BIN` on the card), or with
 `../core/tools/run.py build/sshock.bin`. On the first start (no
@@ -156,12 +156,14 @@ libstdc++.
 | `port/m9b_events.c` | in place of `INPUT/Source/sdl_events.c`: USB keyboards and mice and the UART's keys into the game's key and mouse event queues (HID usages to Mac key codes) |
 | `port/m9b_sound.c` | in place of `MacSrc/SDLSound.c` and `Xmi.c`: the effects mixer (VOC samples), the audio stream cutscenes and audio logs feed, the music (pre-rendered sequences, streamed) |
 | `port/m9b_posix.c` | files under `SSHOCK/` (the linker wraps `open`, `unlink`, `rename`), `access`, `gettimeofday`, `stdin` |
-| `port/m9b_hw.h` | interrupts, cache cleaning, start-up (no-ops in the host build) |
+| `port/m9b_hw.h` | interrupts, cache cleaning, start-up, `CLOCK_CNT` (no-ops in the host build, the clock the harness's) |
+| `port/m20_engine.c`, `m20_engine.h` | the span engine's polygons, the composing, the RSD cache (The span engine) |
+| `port/m20_hw.h` | the span engine's registers (`SPAN_W`, `SPAN_R`), `SDRAM_OFF` and the cache instructions: the board's, or in the host build the engine's C model and no-ops |
 | `port/SDL.h`, `SDL_mixer.h`, `shockolate_version.h` | a stand-in for the SDL2 types and calls the game code still makes; the header upstream's CMake generates |
 | `tools/put_data.sh` | copies the data from an installed CD version to the card |
 | `tools/make_music.sh` | renders the music to WAV files on a PC (see Music) and optionally copies them to the card |
 | `tools/newgame.sh` | loads a build and starts a new game from the UART (tests) |
-| `tools/host/` | the host test harness: `host.c`, `make_datadir.sh` |
+| `tools/host/` | the host test harness: `host.c`, `make_datadir.sh` (The host test harness) |
 | `../core/runtime/syscalls.c`, `string.c`, `trap.c`, `trap_entry.S` | the runtime all the ports share (in the core): files through FatFs, the UART console, misaligned access emulation, the trap handler and PC-sampling profiler |
 
 ## Building and the SD card
@@ -229,10 +231,46 @@ takes 2.8 MB and a cutscene about 0.2 MB:
   afterwards (upstream kept every one played). The cutscenes are the low
   resolution ones (320 x 150, `LOW*.RES`, as DOS's 320 x 200 mode had),
   not the 600 x 300 SVGA ones: a quarter of the decoding.
+- **The resource cache** (2026-11-19): at 640 x 480 a new game left about
+  400 KB of the heap free, and nothing loaded was ever freed, so a few
+  sound effects, a mugshot (`MFDART.RES` $28, 119 KB, read whole) and an
+  audio log ran it out: `ResLock: Could not load 12f` (a sound effect),
+  `Not enough cache memory to load bitmap!`, and a jump through a bad
+  pointer, as `critical_error()` returns. Now:
+  - the level's textures are dropped from the cache once copied into
+    the texture buffers (`textmaps.c`; upstream kept them, 1.1 MB);
+  - the inventory's background buffer is sized for the 320 x 200
+    coordinates its macros scale (`invent.c`; it was sized from the
+    screen's height, 594 KB at 640 x 480 instead of 110 KB);
+  - the pager is back (`RES/Source/resacc.c`: `ResMalloc`; Shockolate had
+    left the game's out): the resource loaders, and the sound effects'
+    copies, drop unlocked resources (least recently used first) when
+    malloc fails, and the LRU chain's macros check membership (`res_.h`;
+    upstream's call sites corrupted it);
+  - sound effects are unlocked once the mixer has its copy (`digifx.c`;
+    upstream left every one played locked), a sample that can't be loaded
+    is left out, and the bitmap drawers in `tools.c` don't go on through
+    NULL after a critical error.
+  A new game now takes 2.7 MB of the heap (4.4 MB before) in the host
+  harness held to the board's (below); 2.8 MB with the span engine's
+  memory (2026-11-19: 2807 KB in use in level 1's first room, at most
+  3188 KB while the level loads; without the engine 2711 and 3098 KB).
 
-The host harness limits the game's allocations to 3.7 MB and fills new
-memory with a pattern, as the board would have it; the most it reported
-in use while playing level 1 was 2.8 MB.
+The host harness's heap is the board's, 5048 KB (`0xFE0000 -
+__heap_start` of `build/sshock.elf`: the Makefile reads it), first fit as
+picolibc's, new memory filled with a pattern as the board would have it.
+Since it builds with the span engine (The host test harness), the
+engine's memory is in it as on the board: the display buffers' RGB565
+view rows (3 x 330 KB at 640 x 480, where the 8 bpp screens without the
+engine take 3 x 300 KB) and the RSD cache (up to 192 KB). (Before, the
+host build had no engine and held the game to 4785 KB, the board's heap
+less an estimate of those.) It reports the largest free block with each
+refusal: after the sound effect test below (`sfx 0 114`) 926 KB are free
+but in pieces of at most 59 KB, and opening an audio log then crashes
+(`audiolog.c` allocates its 64 KB ring with plain `malloc`, not through
+the pager, and doesn't check it: `AmovReadAudioBlock` writes through
+NULL), with or without the engine. (At 320 x 200 on the m9b's 3.7 MB the
+most it reported in use while playing level 1 was 2.8 MB.)
 
 ## Video
 
@@ -291,25 +329,105 @@ at a time.
 
 ## The host test harness
 
-`make host` builds `build-host/sshock-host`, the game and port code for
-32-bit x86 Linux (gcc-multilib): the SoC's I/O registers are plain memory
-mapped at their own addresses, a thread keeps the clock counter running,
-and the harness plays the hardware's part from the game loop (vertical
-blanks, audio halves, written to `OUT/audio.wav`; USB keyboard and mouse
-reports from a script; screenshots). It also limits the heap to the
-board's and reports the open files (the board has 40).
+`make host` builds `build-host/sshock-host`: the game and port code as the
+board builds them (`M20`, `M20_ENGINE`) for 32-bit x86 Linux (gcc-multilib,
+g++-multilib), with the span engine's register writes going to its C
+model (`../core/firmware/span_emu.c`, bit-exact with the RTL) through
+`port/m20_hw.h`, so the engine draws what the board's would, from the same
+writes. `make host HOST_ENGINE=0` builds `build-host-cpu/sshock-host`
+without the engine (the CPU's texture mappers draw the whole view, the
+screens shown 8 bpp), for comparison. Neither changes the board build.
+
+- **Memory:** it's linked at `0x800000` (`-Ttext-segment`) and the game's
+  heap is an arena in its .bss the board's size (Memory), so everything
+  the engine reads and writes (display buffers, textures, lightmaps, the
+  engine's z row) is in the board's SDRAM window and `SDRAM_OFF(p) = p -
+  0x800000` holds (checked). `M9B_HEAP_KB` lowers the cap.
+- **Hardware:** the SoC's I/O registers are plain memory at their own
+  addresses; the harness plays the hardware's part from the game loop
+  (`pump_events`): vertical blanks (`vblank_flip`, which writes the line
+  table and palette), audio halves (written to `OUTDIR/audio.wav`), USB
+  keyboard and mouse reports from the script, screenshots.
+- **Time:** virtual, so runs repeat exactly and the two builds play the
+  same game: the clock goes on 1 us at each read and each frame takes at
+  least `SSHOCK_FRAME_MS` (default 50: 20 fps); `SSHOCK_FRAME_MS=0` runs in
+  real time (at the board's 60 MHz clock rate). The script's times are this
+  time.
+- **Screenshots** (`shot NAME`) are the picture the video hardware would
+  make from the line table and palette, the frame shown: with the engine,
+  the view's rows from the RGB565 display buffer and the interface rows
+  from the game's 8 bpp screen. At the game's resolution (each screen
+  pixel's first picture pixel), or 1280 x 720 with `SSHOCK_SHOT_FULL=1`.
+  `screen NAME` saves the 8 bpp screen as the game drew it (with the
+  engine's holes, as Ctrl-D on the board).
+- **Files:** the data is read from the card's tree as
+  `../sdcard/make_sdcard.sh` builds it (`OUT/card/`, upper-case names: the
+  harness matches names case-insensitively, as FatFs does) or from a
+  directory `tools/host/make_datadir.sh` made; nothing is written there.
+  What the game writes (`prefs.txt`, `keybinds.txt`, `CurrentGame.dat`,
+  the saves) goes to the save directory, and is read from there first (a
+  file only in the data is copied there when opened for update).
+- At exit it prints the heap's use and the engine's counters
+  (`span_emu_stats`: spans, pixels, EDGE commands, lightmaps, and the
+  checks: spans of 0 pixels, z buffer layout, stale z cache lines);
+  `span_emu:` lines on stderr report each check's first failure. Every 10
+  s it prints the heap's use and the open files (the board has 40). It has
+  no window.
 
 ```
-tools/host/make_datadir.sh ~/.local/share/Steam/steamapps/common/SS1/SSHOCK /tmp/ss-data
-build-host/sshock-host /tmp/ss-data /tmp/ss-out SCRIPT
+make host                     # build-host/sshock-host (HOST_ENGINE=0: build-host-cpu/)
+build-host/sshock-host [DATADIR] OUTDIR SCRIPT
 ```
 
-with SCRIPT lines like `12000 key 0x29` (time in ms, HID usage: Esc),
-`14000 move 165 107`, `15200 click`, `20000 shot name`, `60000 email 1`
-(opens email 1, as the email panel would), `90000 quit` (see
-`tools/host/host.c`). On the board, Ctrl-E on the UART opens email 1 too.
-(The host build doesn't link at the moment: `m20_screenshot`, from the
-core's runtime, is missing there.)
+- `DATADIR`: the card's root (`../sdcard/out/card`, holding `SSHOCK/`) or
+  its `SSHOCK/` itself; without it, `$SSHOCK_DATA`.
+- `OUTDIR` (made if need be): the screenshots (`NAME.ppm`), `audio.wav`,
+  and the save directory `OUTDIR/SSHOCK/` unless `$SSHOCK_SAVE` names
+  another (keep one to go on from a saved game or keep the preferences
+  between runs; without `prefs.txt` the intro plays first).
+- `SCRIPT` lines (`#` comments): `12000 key 0x29` (time in ms, a USB HID
+  usage pressed for 100 ms: Esc), `down HID`, `up HID`, `move DX DY`,
+  `click [left|right]`, `shot NAME`, `screen NAME`, `email N` (opens email
+  N, as the email panel would), `sfx N [M]` (plays sound effects N to M,
+  one a frame), `res` (the resource cache by file, locked and not, and the
+  live allocations of 8 KB or more by caller: `addr2line -f -e
+  build-host/sshock-host ADDR`), `quit` (see `tools/host/host.c`).
+
+For example, a new game and a few steps, with the data from the card the
+m20-system build makes (`/tmp/ng.txt`):
+
+```
+15000 key 0x29    # Esc: the intro
+25000 key 0x29
+30000 key 0x51    # Down, Enter: New Game
+31000 key 0x28
+33000 key 0x10    # a name, Enter
+34000 key 0x28
+50000 key 0x2c    # Space: the help screen away
+52000 shot g1
+53000 down 0x1A   # W held 1.5 s
+54500 up 0x1A
+56000 shot g2
+57000 down 0x04   # A: turn left
+57600 up 0x04
+59000 shot g3
+70000 quit
+```
+
+```
+make host && build-host/sshock-host ../sdcard/out/card /tmp/ss-out /tmp/ng.txt
+```
+
+(about a second: `/tmp/ss-out/g1.ppm` ..., `/tmp/ss-out/SSHOCK/prefs.txt`).
+The same script with `build-host-cpu/sshock-host` plays the same game
+without the engine: the pictures differ only in the 3D view, in the
+light (the engine's lightmap is a plane fitted to the vertices' light in
+texture space, where the CPU interpolates it across the screen: polygons
+whose corners' light differs much, e.g. a ceiling tile lit 0, 11, 0, 8 of
+the 16 rows at its corners, come out flatter and brighter, with steps at
+some polygon edges) and in the colours (RGB565 scaled by the light, where
+the CPU's light table picks palette colours). On the board, Ctrl-E on the
+UART opens email 1 as `email 1` does.
 
 ## Changes to Shockolate
 
@@ -324,7 +442,12 @@ Marked `M9B`:
   sound fed as it plays, the movies freed, a cutscene that can't be opened
   going back to the menu (upstream went on without a movie and crashed).
 - `GameSrc/tools.c`: a palette read from the file (compound resources' data
-  stay there); a pointer that could be used uninitialized.
+  stay there); a pointer that could be used uninitialized; no drawing
+  through NULL after a critical error.
+- `RES/Source/resacc.c`, `resload.c`, `refacc.c`, `res_.h`: the pager
+  (`ResMalloc`), LRU chain macros that check membership, a failed `RefLock` not left
+  locked; `GameSrc/textmaps.c`, `invent.c`, `digifx.c`, `port/m9b_sound.c`:
+  the memory fixes above (Memory).
 - `2D/Source/RSD/RSDUnpack.c`: the texture unpacker without unaligned
   word accesses (Building).
 - `FIX/Source/fix.c`: 64-by-32-bit divisions through the hardware divider
@@ -359,5 +482,5 @@ link it either), CMake files.
 - Speed: each engine polygon's setup, the composing, the on-line help's
   object scan (`olh_scan_objs`); the engine's texel misses on 128 x 128
   textures (`make B=build-prof`).
-- The occasional `ResLock: Could not load 112` at 640 x 480 (memory?).
-- The host build's link.
+- On the board: a long game with the pager (`ResMalloc: paged out ...`
+  lines on the UART say when it works).

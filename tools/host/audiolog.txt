@@ -1,0 +1,30 @@
+# a new game at 640 x 480, every sound effect (0..114), then emails 1 and 2
+# (an audio log with its mugshot), the resource cache dumped between: the
+# heap at its fullest (the audio log's crash, fixed with ResMalloc)
+15000 key 0x29
+25000 key 0x29
+30000 key 0x51
+31000 key 0x28
+33000 key 0x10
+34000 key 0x28
+50000 key 0x2c
+54000 res
+56000 sfx 0 114
+70000 res
+72000 email 1
+80000 res
+81000 shot email1
+82000 email 2
+90000 sfx 21
+90500 sfx 55
+91000 sfx 54
+91500 sfx 102
+95000 res
+84000 shot t84
+86000 shot t86
+88000 shot t88
+92000 shot t92
+94000 shot t94
+96000 shot t96
+98000 shot t98
+99000 quit

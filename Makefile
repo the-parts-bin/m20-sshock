@@ -4,7 +4,8 @@
 # riscv64-unknown-elf-gcc/g++ and picolibc-riscv64-unknown-elf.
 #
 # `make host` builds tools/host's test harness instead: the same game and
-# port code for 32-bit x86 Linux (gcc-multilib, g++-multilib).
+# port code for 32-bit x86 Linux (gcc-multilib, g++-multilib), the span
+# engine emulated (HOST_ENGINE=0: without it).
 
 CROSS   ?= riscv64-unknown-elf-
 CC      := $(CROSS)gcc
@@ -148,24 +149,43 @@ $(B)/sshock.bin: $(B)/sshock.elf
 	@ls -l $@
 
 # -------------------------------------------------------------------------
-# The host test harness (tools/host/host.c): 32-bit x86, so the game's
-# structures and pointers are as on the board. The C++ (EDMS) is built
-# without M9B, whose additions are for int32_t being long (riscv32).
+# The host test harness (tools/host/host.c, README.md): 32-bit x86, so the
+# game's structures and pointers are as on the board. The C++ (EDMS) is
+# built without M9B, whose additions are for int32_t being long (riscv32).
+# As the board (M20, M20_ENGINE), the span engine's register writes going
+# to its C model (../core/firmware/span_emu.c), into build-host/;
+# HOST_ENGINE=0 leaves the engine out (the CPU draws the whole view), into
+# build-host-cpu/. Linked at 0x800000, the game's heap an arena the board's
+# heap's size (M20_HEAP: 0xFE0000 - build/sshock.elf's __heap_start when
+# it's built), so what the engine reads and writes is in the board's SDRAM
+# window.
 # -------------------------------------------------------------------------
-HB := build-host
-HOST_C_SRC := $(GAME_SRC) $(LIB_C:%=$(L)/%.c) $(PORT_SRC) tools/host/host.c
+HOST_ENGINE ?= 1
+ifeq ($(HOST_ENGINE),1)
+HB ?= build-host
+HOST_DEFS := -DM20 -DM20_ENGINE
+HOST_EMU := $(CORE_FW)/span_emu.c
+else
+HB ?= build-host-cpu
+HOST_DEFS := -DM20
+HOST_EMU :=
+endif
+BOARD_ELF := build/sshock.elf
+M20_HEAP ?= $(if $(wildcard $(BOARD_ELF)),$(shell printf '0x%x' $$(( 0xFE0000 - 0x$$($(CROSS)nm $(BOARD_ELF) | awk '$$3 == "__heap_start" { print $$1 }') ))),0x4EE280)
+HOST_C_SRC := $(GAME_SRC) $(LIB_C:%=$(L)/%.c) $(PORT_SRC) $(HOST_EMU) tools/host/host.c
 hobj = $(HB)/$(subst ../,_/,$(basename $(1))).o
 HOST_OBJ := $(foreach f,$(HOST_C_SRC) $(CXX_SRC),$(call hobj,$(f)))
-HOST_CFLAGS := -m32 -O1 -g $(GAMEFLAGS) -DM9B $(INCLUDES) $(WARN) $(CWARN) -std=gnu11
-HOST_CXXFLAGS := -m32 -O1 -g $(GAMEFLAGS) $(INCLUDES) $(WARN) -std=gnu++11
+HOST_CFLAGS := -m32 -msse2 -mfpmath=sse -O1 -g -fno-pie -fno-asynchronous-unwind-tables $(GAMEFLAGS) -DM9B $(HOST_DEFS) -DM20_HEAP=$(M20_HEAP)u $(INCLUDES) $(WARN) $(CWARN) -std=gnu11
+HOST_CXXFLAGS := -m32 -msse2 -mfpmath=sse -O1 -g -fno-pie -fno-asynchronous-unwind-tables -fno-exceptions $(GAMEFLAGS) $(INCLUDES) $(WARN) -std=gnu++11
 
+# (the objects depend on the Makefile: the flags)
 define host_c_rule
-$(call hobj,$(1)): $(1)
+$(call hobj,$(1)): $(1) Makefile
 	@mkdir -p $$(@D)
 	gcc $$(HOST_CFLAGS) $$(EXTRA) -MMD -MP -c $$< -o $$@
 endef
 define host_cxx_rule
-$(call hobj,$(1)): $(1)
+$(call hobj,$(1)): $(1) Makefile
 	@mkdir -p $$(@D)
 	g++ $$(HOST_CXXFLAGS) $$(EXTRA) -MMD -MP -c $$< -o $$@
 endef
@@ -174,12 +194,13 @@ $(foreach f,$(CXX_SRC),$(eval $(call host_cxx_rule,$(f))))
 $(foreach f,$(GAME_SRC) $(PORT_SRC),$(call hobj,$(f))): HOST_CFLAGS += -include precompiled.h
 
 comma := ,
-HOST_ALLOC := malloc calloc realloc aligned_alloc free
+HOST_WRAP := main pump_events malloc calloc realloc aligned_alloc free strdup open fopen unlink remove rename access
 
 host: $(HB)/sshock-host
 
 $(HB)/sshock-host: $(HOST_OBJ)
-	g++ -m32 $(HOST_OBJ) $(addprefix -Wl$(comma)--wrap=,pump_events main $(HOST_ALLOC)) -lpthread -lm -o $@
+	g++ -m32 -no-pie -Wl,-Ttext-segment=0x800000 $(HOST_OBJ) $(addprefix -Wl$(comma)--wrap=,$(HOST_WRAP)) -lpthread -lm -o $@
+	@echo "$@: heap $(M20_HEAP) (the board's), engine $(HOST_ENGINE)"; size $@
 
 -include $(OBJ:.o=.d) $(HOST_OBJ:.o=.d)
 

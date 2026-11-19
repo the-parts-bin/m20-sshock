@@ -168,7 +168,7 @@ static uint32_t line_16bpp(uintptr_t addr) {
 
 static void cache_flush(const void *p, uint32_t len) {
     for (uintptr_t a = (uintptr_t)p & ~63u; a < (uintptr_t)p + len; a += 64u)
-        asm volatile("cbo.flush (%0)" :: "r"(a) : "memory");
+        CBO_FLUSH(a);
 }
 #endif
 
@@ -337,7 +337,7 @@ static uint32_t scan_row(uint32_t *s4, uint16_t *dv, uint32_t *holes, int reset)
     uintptr_t line = 0;
     uint32_t nw = view_w / 4u, written = 0;
     for (uint32_t g = 0; g < nw; g += 4u) {   // the next line prefetched
-        if (!(((uintptr_t)(s4 + g)) & 63u)) asm volatile("prefetch.r 64(%0)" :: "r"(s4 + g) : "memory");
+        if (!(((uintptr_t)(s4 + g)) & 63u)) PREFETCH_R64(s4 + g);
         uint32_t ge = g + 4u > nw ? nw : g + 4u;
         if (ge == g + 4u && (s4[g] & s4[g + 1] & s4[g + 2] & s4[g + 3]) == 0xFFFFFFFFu) { *holes += 16; continue; }
         for (uint32_t i = g; i < ge; i++) {
@@ -347,7 +347,7 @@ static uint32_t scan_row(uint32_t *s4, uint16_t *dv, uint32_t *holes, int reset)
             uint16_t *d = dv + 4u * i;
             uintptr_t l = (uintptr_t)d & ~(uintptr_t)63;
             if (l != line) {
-                if (line) asm volatile("cbo.flush (%0)" :: "r"(line) : "memory");
+                if (line) CBO_FLUSH(line);
                 line = l;
             }
             for (uint32_t k = 0; k < 4u; k++, v >>= 8) {
@@ -357,7 +357,7 @@ static uint32_t scan_row(uint32_t *s4, uint16_t *dv, uint32_t *holes, int reset)
             }
         }
     }
-    if (line) asm volatile("cbo.flush (%0)" :: "r"(line) : "memory");
+    if (line) CBO_FLUSH(line);
     return written;
 }
 
