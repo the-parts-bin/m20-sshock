@@ -7,8 +7,8 @@ SDRAM, uses picolibc, and reads the CD version's data from the SD card
 through the core firmware's SD driver and FatFs.
 
 **m20:** this is the m9b port (m9b-sshock at `c2743e2`) moved to the m20:
-the m20's CPU flags (the F extension, Zicboz), its clock (54 MHz, from
-`../core/firmware/clock.h`), its flash disk driver, and video for its
+the m20's CPU flags (the F extension, Zicboz), its clock (60 MHz, from
+`../core/firmware/clock.h`; 54 MHz until 2026-11-16), its flash disk driver, and video for its
 1280 x 720 picture (720 lines; columns doubled by the line table and, at
 320 wide, once more in the copy). It starts in the game's SVGA mode,
 640 x 480 (`MacSrc/Prefs.c`; 320 x 200 can still be chosen in the game's
@@ -61,8 +61,15 @@ on-line help off and on without saving it. The profile build (below) also
 prints the engine's counters every 5 s; `EXTRA=-DM20_CHECK` reports CPU
 drawing that wasn't put in a box.
 
-Measured on the board (2026-11-08, level 1's first room, `make
-B=build-prof`):
+The depth test is written off with the frame and z registers
+(`SPAN_W(26, 0)`): Shock draws without z (its z base is a one-row
+`zdummy`), but `SPAN_ZTEST` survives every reset, and left on by a game
+run before (Quake, TRX) it made the engine write depths at
+zdummy − target past each pixel, into Shock's memory (a hang starting a
+game). The firmware also clears it before starting a program.
+
+Measured on the board at 54 MHz (2026-11-08, level 1's first room, the
+profile build, Building):
 
 | 640 x 480 | fps |
 |---|---|
@@ -70,7 +77,7 @@ B=build-prof`):
 | the span engine | 10.2 |
 | (320 x 200, the CPU) | 11.6 |
 
-2026-11-14, the same room with the on-line help off (its pick-up render
+2026-11-14 (54 MHz), the same room with the on-line help off (its pick-up render
 costs about 2.5 fps while it's on):
 
 | step | fps |
@@ -85,9 +92,9 @@ costs about 2.5 fps while it's on):
 What's left is mostly the CPU's: each engine polygon's setup, the pass at
 the copy to the screen (about 10%: it reads the whole view canvas), the
 boxes (about 6%, half of it waiting for the engine), the game. (On
-2026-11-08:) The engine is under 40% busy, with
+2026-11-08:) The engine was under 40% busy, with
 many texel cache misses on the 128 x 128 textures seen at an angle (its
-cache is 2 KB, direct-mapped); giving it the 64 x 64 versions halved the
+cache was then 2 KB, direct-mapped; it is 8 KB now); giving it the 64 x 64 versions halved the
 misses but gained only 3%. The `ResLock: Could not load 112` seen now and
 then (and the crash after an audio log, 2026-11-19) was the heap running
 out: see Memory.
@@ -196,8 +203,8 @@ through the serial port.
 
 The card needs `SSHOCK/RES/DATA/`: `tools/put_data.sh
 ~/.local/share/Steam/steamapps/common/SS1/SSHOCK` copies the 38 files the
-build reads (92 MB, about 20 minutes through the board; `--no-logs` leaves
-out the audio logs and barks: 34 MB, 7 minutes; emails then show their
+build reads (92 MB, about 25 minutes through the board; `--no-logs` leaves
+out the audio logs and barks: 34 MB, about 10 minutes; emails then show their
 text without the audio) and `SSHOCK/RES/SOUND/THM*.BIN`, the music AI's
 tables; the music itself is `tools/make_music.sh` (Music); and `SSHOCK.BIN` in the
 root for the boot screen's browser (`../core/tools/sdput/sdput.py put
@@ -517,7 +524,8 @@ Marked `M9B`:
 - `FIX/Source/fix_sqrt.c`, `3D/Source/vector.c`: integer square roots (the
   float ones are slow library code without an FPU; `g3_vec_mag` was
   128-bit `long double`).
-- `MacSrc/Prefs.c`: 320 x 200 by default (Shockolate's is 640 x 480).
+- `MacSrc/Prefs.c`: 320 x 200 by default on the m9b (Shockolate's, and
+  the m20's under `M20`, is 640 x 480).
 - `UI/Source/event.c`: `uiInit` returned an uninitialized value; a
   pending click expires at the input's time, not the current one (double
   clicks at a low frame rate, see Input).
@@ -526,6 +534,13 @@ Marked `M9B`:
   ambiguous).
 - `GameSrc/musicai.c`, `MacSrc/Modding.c`: no OPL synthesizer, no
   directory listing.
+
+Marked `M20` (the span engine): `GameSrc/frmain.c`, `frsetup.c`,
+`render.c`, `textmaps.c`, `gameobj.c` and `3D/Source/polygon.c`, `tmap.c`,
+`Bitmap.c`: the textured polygons to the engine (`port/m20_engine.c`), the
+boxes of what the CPU draws (`m20_cpu_drew`; voxels claim the whole
+view), and the textures handed to the engine when they're loaded
+(`m20_tex_loaded`).
 
 Unmarked, as they're right everywhere: declarations that said `int` where
 the definitions said `int32_t` (or the other way round), which C++ mangles
@@ -543,6 +558,6 @@ link it either), CMake files.
 - Music: check the in-game themes and their layers on the board.
 - Speed: each engine polygon's setup, the composing, the on-line help's
   object scan (`olh_scan_objs`); the engine's texel misses on 128 x 128
-  textures (`make B=build-prof`).
+  textures (the profile build).
 - On the board: a long game with the pager (`ResMalloc: paged out ...`
   lines on the UART say when it works).
