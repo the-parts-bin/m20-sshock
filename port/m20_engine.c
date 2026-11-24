@@ -216,6 +216,9 @@ int m20_engine_begin(void) {
         SPAN_W(17, target_stride);
         SPAN_W(18, SDRAM_OFF(zdummy));
         SPAN_W(19, 0);
+        // no depth test: no reset clears it, and with it on the engine writes
+        // depths at zdummy - target past each pixel, into the program
+        SPAN_W(26, 0);
     } else if (cv->bm.bits != cv_bits) return 0;
     cv_bits = cv->bm.bits;
     cv_row = cv->bm.row;
